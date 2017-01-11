@@ -1,25 +1,10 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-#import matplotlib.pyplot as plt
 import tensorflow as tf
 import numpy as np
 import os
+from utils import *
 #from IPython.display import clear_output, Image, display, HTML
 
-def defaultinDict(dic,entry,default=None):
-    if entry in dic:
-        return dic[entry]
-    return default
 
-def fixDir(dir_):
-    if not os.path.exists(dir_):
-        os.mkdir(dir_)
-    return dir_
-
-def safeDir(dir_):
-    assert(not os.path.exists(dir_))
-    return dir_
 def convertData(File):
     print("Converting file %s"%File)
     assert(os.path.isfile(File+'.npy'))
