@@ -1,46 +1,69 @@
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 import tensorflow as tf
 import numpy as np
 import os
-from dataProducer import *
+#from dataProducer import *
 
 
-'''def defaultinDict(dic,entry,default=None):
-    return (entry in dic and dic[entry]) or default
 
-
-def fixDir(dir_):
-    if not os.path.exists(dir_):
-        os.mkdir(dir_)
-    return dir_'''
-
+class _LayerFactory:
+    classes={}
+    updated=False
+    @staticmethod
+    def _add_class(cl):
+        assert(isinstance(cl,type) and issubclass(cl,Layer))
+        if "type" in dir(cl):
+            t=cl.type
+        else:
+            t=cl.__name__
+        if t!="Abstract":
+            _LayerFactory.classes[t]=cl
+    @staticmethod
+    def _update_classes(cl):
+        _LayerFactory._add_class(cl)
+        for scl in type.__subclasses__(cl):
+            _LayerFactory._update_classes(scl)
+    @staticmethod
+    def update_classes():
+        _LayerFactory._update_classes(Layer)
+    @staticmethod
+    def build(type,*args,**kwargs):
+        if not _LayerFactory.updated:
+            _LayerFactory.update_classes()
+        assert(type in _LayerFactory.classes)
+        return(_LayerFactory.classes[type](*args,**kwargs))
+LayerFactory=_LayerFactory.build
 
 #Basic layers
 class Layer:
-    def __init__(self,x,dic={}):
-        self._type="None"
-        self.x=x
-        self.batch_norm=defaultinDict(dic,"batch_norm",False)#Batch normalization for the input
-        self.dropout=defaultinDict(dic,"dropout",False)#Dropout for the input
+    type="Identity"
+    def __init__(self,x,batch_norm=False,dropout=False,**kwargs):
+        for a,b in enumerate(kwargs):
+            print("Unknown argument: "+a)
+        self.type=self.__class__.type
+        self._x=x
+        self.x=self._x
+        self.batch_norm=batch_norm
+        self.dropout=dropout
         if self.batch_norm:
             mean,std=tf.nn.moments(x,range(len(self.x.get_shape().as_list())))
             self.x=(self.x-mean)/std
         if self.dropout:
             self.tf_keep_rate=tf.placeholder_with_default(np.float32(1.0),[])
             self.x=tf.nn.dropout(self.x,self.tf_keep_rate)
-    def save(self):
-        dic={}
-        dic["type"]=self._type
-        dic["dropout"]=self.dropout
-        dic["batch_norm"]=self.batch_norm
-        return dic
+        self.y=self.x
+    def save(self,**kwargs):
+        kwargs["type"]=self.type
+        kwargs["dropout"]=self.dropout
+        kwargs["batch_norm"]=self.batch_norm
+        return kwargs
     def get(self):
         return self.y
     def getVars(self):
+        return self.getWeights()+self.getBiases()
+    def getWeights(self):
         return []
-        #return self.w,self,b
+    def getBiases(self):
+        return []
     def getDropout(self):
         if self.dropout:
             return [self.tf_keep_rate]
@@ -48,192 +71,168 @@ class Layer:
     def getIn(self):
         return self.x
     def start(self,sess):
-        #print("Starting "+self._type)
         return
     def stop(self):
         return
-    
-class IdentityLayer(Layer):
-    def __init__(self,x,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="identity"
-        self.y=self.x
         
 class PlaceholderLayer(Layer):
-    def __init__(self,x,ignore_batch=False,ignore_size=False,dic={}):
-        Layer.__init__(self,x,dic)
-        self.ignore_batch=defaultinDict(dic,"ignore_batch",ignore_batch)
-        self.ignore_size=defaultinDict(dic,"ignore_size",ignore_batch)
-        self._type="placeholder"
-        self.t_shape=self.x.get_shape().as_list()
+    type="Placeholder"
+    def __init__(self,x,ignore_batch=False,ignore_size=False,**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.ignore_batch=ignore_batch
+        self.ignore_size=ignore_size
+        self.t_shape=self.y.get_shape().as_list()
         if self.ignore_batch:
             self.t_shape[0]=None
         if self.ignore_size:
             self.t_shape[1:3]=[None,None]
-        self.y=tf.placeholder_with_default(self.x,self.t_shape)
+        self.y=tf.placeholder_with_default(self.y,self.t_shape)
+    def save(self,**kwargs):
+        kwargs["ignore_batch"]=self.ignore_batch
+        kwargs["ignore_size"]=self.ignore_size
+        return Layer.save(self,**kwargs)
         
 class LinearLayer(Layer):
-    def __init__(self,x,size=None,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="linear"
-        size=defaultinDict(dic,"size",size)
-        self.randScale=defaultinDict(dic,"rand_scale",0.1)
+    type="Linear"
+    def __init__(self,x,size=None,rand_scale=0.1,**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.size=size                       #Number of output channels
+        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
         assert(size!=None)
-        shape=self.x.get_shape()[1:]
-        self.y=self.x
+        shape=self.y.get_shape()[1:]
         if len(shape)>1:
             self.y=tf.reshape(self.y,[-1,shape.num_elements()])
         self.shape=[shape.num_elements(),size]
-        self.w=tf.Variable(tf.random_normal(self.shape, 0, self.randScale),name='Weights')
-        self.b=tf.Variable(tf.random_normal([size], self.randScale, self.randScale),name='Biases')
+        self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
+        self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
         self.y=tf.matmul(self.y,self.w)+self.b
-    def save(self):
-        dic=Layer.save(self)
-        dic["size"]=self.shape[1]
-        dic["rand_scale"]=self.randScale
-        return dic
-    def getVars(self):
-        return [self.w,self.b]
+    def save(self,**kwargs):
+        kwargs["size"]=self.size
+        kwargs["rand_scale"]=self.rand_scale
+        return Layer.save(self,**kwargs)
+    def getWeights(self):
+        return [self.w]
+    def getBiases(self):
+        return [self.b]
             
-class QuadLayer(LinearLayer):
-    def __init__(self,x,size=None,dic={}):
-        LinearLayer.__init__(self,x,size,dic)
-        self._type="quadratic"
-        self.y=tf.mul(self.y,self.y)
 
-class BasicRelu(Layer):
-    def __init__(self,x,dic={}):
+class SimpleRelu(Layer):
+    type="Simple_Relu"
+    def __init__(self,x,**kwargs):
         Layer.__init__(self,x,dic)
-        self._type="basic_relu"
         self.y=tf.nn.relu(self.y)
         
-class BatchNormalize(Layer):
-    def __init__(self,x,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="batch_normalize"
-        self.mean,self.std=tf.nn.moments(x,range(len(self.x.get_shape().as_list())))
-        self.y=(self.x-self.mean)/self.std
 
 class ReluLayer(LinearLayer):
-    def __init__(self,x,size=None,dic={}):
-        LinearLayer.__init__(self,x,size,dic)
-        self._type="relu"
-        self.relu=BasicRelu(self.x)
+    type="Relu"
+    def __init__(self,x,**kwargs):
+        LinearLayer.__init__(self,x,**kwargs)
+        self.relu=SimpleRelu(self.y)
         self.y=self.relu.y
         
-class BasicSoftmax(Layer):
-    def __init__(self,x,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="basic_softmax"
-        self.y=tf.nn.softmax(self.x)
-        
-class BasicSigmoid(Layer):
-    def __init__(self,x,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="basic_sigmoid"
-        self.y=tf.nn.sigmoid(self.x)
-        
-class SigmoidLayer(LinearLayer):
-    def __init__(self,x,size=None,dic={}):
-        LinearLayer.__init__(self,x,size,dic)
-        self._type="sigmoid"
-        self.sigmoid=BasicSigmoid(self.x)
-        self.y=self.sigmoid.y
+class SimpleSoftmax(Layer):
+    type="Simple_Softmax"
+    def __init__(self,x,**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.y=tf.nn.softmax(self.y)
         
 class SoftmaxLayer(LinearLayer):
-    def __init__(self,x,size=None,dic={}):
-        LinearLayer.__init__(self,x,size,dic)
-        self._type="softmax"
-        self.softmax=BasicSoftmax(self.x)
+    type="Softmax"
+    def __init__(self,x,**kwargs):
+        LinearLayer.__init__(self,x,**kwargs)
+        self.softmax=SimpleSoftmax(self.y)
         self.y=self.softmax.y
+        
+class SimpleSigmoid(Layer):
+    type="Simple_Sigmoid"
+    def __init__(self,x,**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.y=tf.nn.sigmoid(self.y)
+        
+class SigmoidLayer(LinearLayer):
+    type="Sigmoid"
+    def __init__(self,x,**kwargs):
+        LinearLayer.__init__(self,x,**kwargs)
+        self.sigmoid=SimpleSigmoid(self.y)
+        self.y=self.sigmoid.y
+        
+class QuadLayer(LinearLayer):
+    type="Quadratic"
+    def __init__(self,x,**kwargs):
+        LinearLayer.__init__(self,x,**kwargs)
+        self.y=tf.mul(self.y,self.y)
 
-class ConvLayer(Layer):
-    def __init__(self,x,size=None,fSize=3,relu=True,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="convolution"
-        self.size=defaultinDict(dic,"size",size)
-        self.fsize=defaultinDict(dic,"fsize",fSize)
-        self.stride=defaultinDict(dic,"stride",1)
-        self.relu=defaultinDict(dic,"relu",relu)
-        self.pad=defaultinDict(dic,"pad","VALID")
-        self.input_channels=defaultinDict(dic,"input_channels",self.x.get_shape()[3].value)
-        self.randScale=defaultinDict(dic,"rand_scale",0.1)
+class WindowLayer(Layer): #Common elements of convolution and pooling (abstract class)
+    type="Abstract"
+    def __init__(self,x,pad="VALID",window=3,stride=1,**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.pad=pad                         #Type of padding used
+        self.window=window                   #Size of the input window
+        self.stride=stride                   #Stride distance of the input window
+    def save(self,**kwargs):
+        kwargs["pad"]=self.pad
+        kwargs["window"]=self.window
+        kwargs["stride"]=self.stride
+        return Layer.save(self,**kwargs)
+        
+class ConvLayer(WindowLayer):
+    type="Convolution"
+    def __init__(self,x,size=None,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
+        WindowLayer.__init__(self,x,**kwargs)
+        self.size=size                       #Number of output channels
+        self.relu=relu                       #Optional relu on the output
+        self._input_channels=input_channels  #(Optional) overrides the number of input channels, needed for variable size input
+        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
+        
         assert(self.size!=None)
-        self.filterShape=[self.fsize,self.fsize,self.input_channels,self.size]
-        #print(self.filterShape)
-        self.w=tf.Variable(tf.random_normal(self.filterShape, 0, self.randScale),name='Weights')
-        self.b=tf.Variable(tf.random_normal([self.size], self.randScale, self.randScale),name='Biases')
-        self.y=tf.nn.bias_add(tf.nn.conv2d(self.x,self.w,[1,self.stride,self.stride,1], self.pad),self.b)
-        #print(self.y.get_shape())
+        self.input_channels=self._input_channels or self.y.get_shape()[3].value
+        #if self.input_channels==None:
+        #    self.input_channels=self.y.get_shape()[3].value
+        self.filter_shape=[self.window,self.window,self.input_channels,self.size]
+        self.w=tf.Variable(tf.random_normal(self.window, 0, self.rand_scale),name='Weights')
+        self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
+        self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b)
         if self.relu:
             self.y=tf.nn.relu(self.y)
-    def getVars(self):
-        return [self.w,self.b]
-    def save(self):
-        dic=Layer.save(self)
-        dic["size"]=self.size
-        dic["fsize"]=self.fsize
-        dic["relu"]=self.relu
-        dic["pad"]=self.pad
-        dic["stride"]=self.stride
-        dic["rand_scale"]=self.randScale
-        return dic
+    def getWeights(self):
+        return [self.w]
+    def getBiases(self):
+        return [self.b]
+    def save(self,**kwargs):
+        kwargs["size"]=self.size
+        kwargs["relu"]=self.relu
+        kwargs["input_channels"]=self._input_channels
+        kwargs["rand_scale"]=self.rand_scale
+        return WindowLayer.save(self,**kwargs)
     
-class PoolLayer(Layer):
-    def __init__(self,x,poolStride=2,poolWindow=3,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="pool"
-        self.poolStride=defaultinDict(dic,"stride",poolStride)
-        self.poolWindow=defaultinDict(dic,"window",poolWindow)
-        self.poolType=defaultinDict(dic,"pool_type","max")
-        self.pad=defaultinDict(dic,"pad","VALID")
-        shape=self.x.get_shape()[1:]
-        if self.poolType=="max":
-            self.y=tf.nn.max_pool(self.x, ksize=[1, self.poolWindow, self.poolWindow, 1], 
-                      strides=[1, self.poolStride, self.poolStride, 1],padding=self.pad)
-        elif self.poolType=="avg":
-            self.y=tf.nn.avg_pool(self.x, ksize=[1, self.poolWindow, self.poolWindow, 1], 
-                      strides=[1, self.poolStride, self.poolStride, 1],padding=self.pad)
+class PoolLayer(WindowLayer):
+    type="Pool"
+    def __init__(self,x,pool_type="max",stride=2,**kwargs):
+        WindowLayer.__init__(self,x,stride=stride**kwargs)
+        self.pool_type=pool_type             #avg or max pooling 
+        self.ksize=[1, self.poolWindow, self.poolWindow, 1]
+        self.strides=[1, self.poolStride, self.poolStride, 1]
+        if self.pool_type=="max":
+            self.y=tf.nn.max_pool(self.y, ksize=self.ksize, 
+                      strides=self.strides,padding=self.pad)
+        elif self.pool_type=="avg":
+            self.y=tf.nn.avg_pool(self.y, ksize=self.ksize, 
+                      strides=self.strides,padding=self.pad)
         else: 
             assert(False)
-    def save(self):
-        dic=Layer.save(self)
-        dic["stride"]=self.poolStride
-        dic["window"]=self.poolWindow
-        dic["pad"]=self.pad
-        dic["pool_type"]=self.poolType
-        return dic
-    
-class RescaleLayer(Layer):#Slow
-    def __init__(self,x,scale=2,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="rescale"
-        self.scale=defaultinDict(dic,"scale",scale)
-        self.in_shape=np.array(x.get_shape().as_list()[1:3])
-        self.out_shape=self.in_shape*self.scale
-        self.y=tf.image.resize_bilinear(x, self.out_shape)
-    def save(self):
-        dic=Layer.save(self)
-        dic["scale"]="scale"
-        return dic
-    
-class ExpandLayer(Layer):#Fast but needs integer scale, no interpolation
-    def __init__(self,x,scale=2,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="rescale"
-        self.scale=defaultinDict(dic,"scale",scale)
-        self.y=tf.depth_to_space(tf.tile(self.x,[1,1,1,self.scale**2]),self.scale)
-    def save(self):
-        dic=Layer.save(self)
-        dic["scale"]="scale"
-        return dic
-    
+    def save(self,**kwargs):
+        kwargs["pool_type"]=self.pool_type
+        return WindowLayer.save(self,**kwargs)
+
 class RandInput(Layer):
-    def __init__(self,x=None,shape=None,dic={}):
-        Layer.__init__(self,None,dic)
-        self._type="random"
-        self.shape=defaultinDict(dic,"shape",shape)
-        self.channels=defaultinDict(dic,"channels",None)
+    type="Random"
+    def __init__(self,x=None,shape=None,channels=None,rand_type="normal",scale=1.,mean=0.,**kwargs):
+        Layer.__init__(self,None,**kwargs)
+        self.shape=shape                     #Shape of the randomly generated tensor, or "x_shape" to deduce from x
+        self.channels=channels               #Optionnal override of the number of channel (shape[3])
+        self.rand_type=rand_type             #normal or uniform generator
+        self.scale=scale                     #scale for the distribution (std or half-range)
+        self.mean=mean                       #mean for the distribution
         if self.shape=="x_shape":
             assert(x!=None)
             self.tf_shape=tf.shape(x)
@@ -243,29 +242,54 @@ class RandInput(Layer):
             self.tf_shape=self.shape
             if self.channels!=None:
                 self.tf_shape[-1]=self.channels
-        self.y=tf.random_normal(self.tf_shape, mean=0.0, 
-                                         stddev=1.0,dtype=tf.float32)
-        #print(self.y.get_shape(),self.channels)
-    def save(self):
-        dic=Layer.save(self)
-        dic["shape"]=self.shape
-        dic["channels"]=self.channels
-        return dic
+        if self.rand_type=="normal":
+            self.y=tf.random_normal(self.tf_shape, mean=self.mean, 
+                                    stddev=self.scale,dtype=tf.float32)
+        elif self.rand_type=="uniform":
+            self.y=tf.random_uniform(self.tf_shape,minval=self.mean-self.scale,
+                                     maxval=self.mean+self.scale,dtype=tf.float32)
+    def save(self,**kwargs):
+        kwargs["shape"]=self.shape
+        kwargs["channels"]=self.channels
+        kwargs["rand_type"]=self.rand_type
+        kwargs["scale"]=self.scale
+        kwargs["mean"]=self.mean
+        return Layer.save(self,**kwargs)
     
-class BasicCombine(Layer):#Not a proper layer
-    def __init__(self,x,combine_op="combine",dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="combine"
-        shapes=[_x.get_shape().as_list() for _x in x]
-        #print(combine_op,shapes)
-        """for shape in shapes:
-            assert(len(shapes[0])==len(shape))
-            if combine_op=="combine":
-                assert(shapes[0][:-1]==shape[:-1])
-            elif combine_op=="combine_batch":
-                assert(shapes[0][1:]==shape[1:])
-            else:
-                assert(shapes[0]==shape)"""
+
+
+class Composite(Layer): #Common elements of composite layers (abstract class)
+    type="Abstract"
+    def __init__(self,x,layers=[],**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self._layers=layers                  #Definition of the layers
+        self.layers=[]
+    def save(self,**kwargs):
+        kwargs["layers"]=[layer.save() for layer in self.layers]
+        #kwargs["layers"]=self._layers
+        return Layer.save(self,**kwargs)
+    def start(self,sess):
+        for layer in self.layers: layer.start(sess) 
+    def stop(self):
+        for layer in self.layers: layer.stop() 
+    def getWeights(self):
+        return Layer.getWeights(self)+[weight for weight in layer.getWeights() for layer in self.layers]
+    def getBiases(self):
+        return Layer.getBiases(self)+[bias for bias in layer.getBiases() for layer in self.layers]
+    def getDropout(self):
+        return Layer.getDropout(self)+[rate for rate in layer.getDropout() for layer in self.layers]
+        #rates=Layer.getDropout(self)
+        #for layer in self.layers: rates+=layer.getDropout()
+        #return rates
+
+
+
+
+
+class SimpleCombine:#Auxiliary class to Combine
+    def __init__(self,x,combine_op="combine"):
+        self.x=x
+        shapes=[_x.get_shape().as_list() for _x in self.x]
         if combine_op=="combine":
             self.y=tf.concat(len(shapes[0])-1,self.x)
         elif combine_op=="combine_batch":
@@ -280,98 +304,36 @@ class BasicCombine(Layer):#Not a proper layer
                 self.y=tf.reduce_prod(tf.pack(self.x),[0])
         else:
             assert(False)
-        
-class BatchQueueLayer(Layer):#Simple interface to the BatchQueue class, comes with a placeholder
-    def __init__(self,x=None,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="batchQueue"
-        self.ignore_batch=defaultinDict(dic,"ignore_batch",True)
-        self.ignore_size=defaultinDict(dic,"ignore_size",True)
-        self.batchQueue=BatchQueue(dic=dic)
-        self.y=self.batchQueue.batchData
-        placeholder=PlaceholderLayer(self.y,ignore_batch=self.ignore_batch,ignore_size=self.ignore_size)
-        self.y=placeholder.y
-    def save(self):
-        dic=Layer.save(self)
-        self.batchQueue.save(dic)
-        return dic
-    def start(self,sess):
-        self.batchQueue.start(sess)
-    def stop(self):
-        self.batchQueue.stop()
+            
+class CombineLayer(Composite): #Combines layers in a parallel way
+    type="Combine"
+    def __init__(self,x,combine_op="combine",**kwargs):
+        CompositeLayer.__init__(self,x,**kwargs)
+        self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
+        for _layer in _layers:
+            self.layers.append(layerFactory(self.x,_layer))
+        self.combine=SimpleCombine([layer.get() for layer in self.layers],combine_op=self.combine_op)
+        self.y=self.combine.y
+    def save(self,**kwargs):
+        kwargs["combine_op"]=self.combine_op
+        return Composite.save(self,**kwargs)
 
-class BatchProducerLayer(Layer):
-    def __init__(self,x=None,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="batchProducer"
-        self.ignore_batch=defaultinDict(dic,"ignore_batch",True)
-        self.ignore_size=defaultinDict(dic,"ignore_size",True)
-        self.batchProducer=BatchProducer(dic=dic)
-        self.y=self.batchProducer.batchData
-        placeholder=PlaceholderLayer(self.y,ignore_batch=self.ignore_batch,ignore_size=self.ignore_size)
-        self.y=placeholder.y
-    def save(self):
-        dic=Layer.save(self)
-        self.batchProducer.save(dic)
-        return dic
-    def start(self,sess):
-        self.batchProducer.start(sess)
-    def stop(self):
-        self.batchProducer.stop() 
-        
-'''class GenLayer(Layer):
-    def __init__(self,x,n_rand=None,name=None,size=None,fSize=3,relu=True,dic={}):
-        Layer.__init__(self,x,name,dic)
-        self.size=defaultinDict(dic,"size",size)
-        self.fSize=defaultinDict(dic,"fsize",fSize)
-        self.n_rand=defaultinDict(dic,"n_rand",n_rand)
-        self.relu=defaultinDict(dic,"relu",relu)
-        self.pad=defaultinDict(dic,"pad","VALID")
-        self.randScale=defaultinDict(dic,"rand_scale",0.1)
-        self.scale=defaultinDict(dic,"scale",2)
-        assert(self.size!=None and self.n_rand!=None)
-        self.in_shape=np.array(x.get_shape().as_list()[1:3])
-        self.out_shape=self.in_shape*2
-        with tf.name_scope(self.name):
-            if self.scale==1:
-                self.out_shape=self.in_shape
-                self.x_scaled=x
-            else:          
-                self.out_shape=self.in_shape*self.scale
-                self.x_scaled=tf.image.resize_bilinear(x, self.out_shape)
-            self.rand_layer=tf.random_normal(tf.concat(0,[self.x_scaled.get_shape()[:3],[self.n_rand]]), mean=0.0, 
-                                         stddev=1.0,dtype=tf.float32, seed=None, name=None)
-            
-            
-            self.ws=tf.Variable(tf.random_normal(
-                    [self.fSize,self.fSize,self.x_scaled.get_shape()[3].value,self.n_rand], 0, self.randScale),name='ScaleWeights')
-            self.bs=tf.Variable(tf.random_normal([self.n_rand], self.randScale, self.randScale),name='ScaleBiases')
-            self.scale=tf.nn.bias_add(tf.nn.conv2d(self.x_scaled,self.ws,[1,1,1,1], "SAME"),self.bs)
-            self.rand_scaled=tf.mul(self.rand_layer,self.scale)
-            
-            self.combined=tf.concat(3,[self.x_scaled,self.rand_scaled])
-            self.filterShape=[self.fSize,self.fSize,self.combined.get_shape()[3].value,self.size]
-            self.w=tf.Variable(tf.random_normal(self.filterShape, 0, self.randScale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([self.size], self.randScale, self.randScale),name='Biases')
-            self.y=tf.nn.bias_add(tf.nn.conv2d(self.combined,self.w,[1,1,1,1], self.pad),self.b)
-            if self.relu:
-                self.y=tf.nn.relu(self.y)
-    def save(self,dic={}):
-        Layer.save(self,dic)
-        dic["type"]="generator"
-        dic["n_rand"]=self.n_rand
-        dic["size"]=self.size
-        dic["relu"]=self.relu
-        return dic
-    @staticmethod
-    def load(x,dic):
-        assert(dic["type"]=="generator")
-        return GenLayer(x,dic=dic)'''
+class Network(Composite):
+    type="Network"
+    def __init__(self,x,**kwargs):
+        Composite.__init__(self,x,**kwargs)
+        for _layer in _layers:
+            layer=layerFactory(self.y,_layer)
+            self.layers.append(layer)
+            self.y=layer.get()
+    
 
+
+#_LayerFactory.update_classes()
 #Convenience Layers
 
     
-def RandomLayer(x,dic):
+'''def RandomLayer(x,dic):
     new_dic={"type":"combine_layer","layers":[]}
     new_dic["layers"].append({"type":"identity"})
     new_dic["layers"].append({"type":"random","shape":dic["shape"],"channels":dic["channels"]})
@@ -388,13 +350,12 @@ def RandomLayerScaled(x,dic):
 
 def MipmapLayer(x,dic):
     new_dic={"type":"pool","stride":dic["scale"],"window":dic["scale"],"pool_type":"avg","pad":"VALID"}
-    return layerFactory(x,new_dic)
+    return layerFactory(x,new_dic)'''
 
 
 
 
-
-def layerFactory(x,dic):
+'''def layerFactory(x,dic):
     t=dic["type"]
     if t=="linear":
         return LinearLayer(x,dic=dic)
@@ -441,67 +402,12 @@ def layerFactory(x,dic):
     elif t=="basic_network":
         return BasicNetwork(x,dic=dic)
     else:
-        assert(False)
+        assert(False)'''
         
-class CombineLayer(Layer):
-    def __init__(self,x,dic={}):
-        Layer.__init__(self,x,dic)
-        self._type="combine_layer"
-        self.combine_op=defaultinDict(dic,"combine_op","combine")
-        self._vars=[]
-        layers_def=dic["layers"]
-        self.layers=[]
-        for layer_def in layers_def:
-            layer=layerFactory(self.x,layer_def)
-            self.layers.append(layer)
-            self._vars+=layer.getVars()
-        self.combine=BasicCombine([layer.get() for layer in self.layers],combine_op=self.combine_op)
-        self.y=self.combine.y
-    def save(self):
-        dic=Layer.save(self)
-        dic["layers"]=[layer.save() for layer in self.layers]
-        return dic
-    def start(self,sess):
-        for layer in self.layers: layer.start(sess) 
-    def stop(self):
-        for layer in self.layers: layer.stop() 
-    def getVars(self):
-        return self._vars
-    def getDropout(self):
-        rates=Layer.getDropout(self)
-        for layer in self.layers: rates+=layer.getDropout()
-        return rates
+
         
-class BasicNetwork(Layer):
-    def __init__(self,x,dic):
-        Layer.__init__(self,x,dic)
-        self._type="basic_network"
-        self.layers=[]
-        self._vars=[]
-        self.y=self.x
-        #self.dropout=defaultinDict(dic,"dropout",False)
-        #self.tf_keep_rate=tf.placeholder_with_default(np.float32(1.0),[])
-        layers_def=dic["layers"]
-        for layer_def in layers_def:
-            layer=layerFactory(self.y,layer_def)
-            self.layers.append(layer)
-            self._vars+=layer.getVars()
-            self.y=layer.get()
-    def save(self):
-        dic=Layer.save(self)
-        dic["layers"]=[layer.save() for layer in self.layers]
-        return dic
-    def start(self,sess):
-        for layer in self.layers: layer.start(sess) 
-    def stop(self):
-        for layer in self.layers: layer.stop() 
-    def getVars(self):
-        return self._vars
-    def getDropout(self):
-        rates=Layer.getDropout(self)
-        for layer in self.layers: rates+=layer.getDropout()
-        return rates
-    
+
+'''    
 class ConvNet(BasicNetwork):
     def __init__(self,x,dic):
         self.layer_n=dic["layer_n"]
@@ -681,10 +587,142 @@ class ClassifierArrayTrainer(ClassifierTrainer):
         labels=tf.tile(tf.expand_dims(tf.expand_dims(labels,1),1),tf.concat(0,[[1],size[1:3],[1]]))
         ClassifierTrainer.__init__(self,network,tf.reshape(labels,[-1,size[3]]),
                                    tf.reshape(logits,[-1,size[3]]),dic,extra_loss,sigmoid)
+'''   
+    
+#Old code
+'''class RescaleLayer(Layer):#Slow
+    def __init__(self,x,scale=2,dic={}):
+        Layer.__init__(self,x,dic)
+        self._type="rescale"
+        self.scale=defaultinDict(dic,"scale",scale)
+        self.in_shape=np.array(x.get_shape().as_list()[1:3])
+        self.out_shape=self.in_shape*self.scale
+        self.y=tf.image.resize_bilinear(x, self.out_shape)
+    def save(self):
+        dic=Layer.save(self)
+        dic["scale"]="scale"
+        return dic'''
+    
+'''class ExpandLayer(Layer):#Fast but needs integer scale, no interpolation
+    def __init__(self,x,scale=2,dic={}):
+        Layer.__init__(self,x,dic)
+        self._type="rescale"
+        self.scale=defaultinDict(dic,"scale",scale)
+        self.y=tf.depth_to_space(tf.tile(self.x,[1,1,1,self.scale**2]),self.scale)
+    def save(self):
+        dic=Layer.save(self)
+        dic["scale"]="scale"
+        return dic'''
+
+'''class CompositeLayer(Layer): #Common elements of composite layers (abstract class)
+    def __init__(self,x,layers=[],**kwargs):
+        Layer.__init__(self,x,**kwargs)
+        self.type="Composite"
+        self._layers=layers                  #Definition of the layers
+        self.layers=[]
+    def save(self,**kwargs):
+        kwargs["layers"]=[layer.save() for layer in self.layers]
+        #kwargs["layers"]=self._layers
+        return Layer.save(self,**kwargs)
+    def start(self,sess):
+        for layer in self.layers: layer.start(sess) 
+    def stop(self):
+        for layer in self.layers: layer.stop() 
+    def getWeights(self):
+        return Layer.getWeights(self)+[weight for weight in layer.getWeights() for layer in self.layers]
+    def getBiases(self):
+        return Layer.getBiases(self)+[bias for bias in layer.getBiases() for layer in self.layers]
+    def getDropout(self):
+        return Layer.getDropout(self)+[rate for rate in layer.getDropout() for layer in self.layers]
+        #rates=Layer.getDropout(self)
+        #for layer in self.layers: rates+=layer.getDropout()
+        #return rates'''
+'''class BatchQueueLayer(Layer):#Simple interface to the BatchQueue class, comes with a placeholder
+    def __init__(self,x=None,dic={}):
+        Layer.__init__(self,x,dic)
+        self._type="batchQueue"
+        self.ignore_batch=defaultinDict(dic,"ignore_batch",True)
+        self.ignore_size=defaultinDict(dic,"ignore_size",True)
+        self.batchQueue=BatchQueue(dic=dic)
+        self.y=self.batchQueue.batchData
+        placeholder=PlaceholderLayer(self.y,ignore_batch=self.ignore_batch,ignore_size=self.ignore_size)
+        self.y=placeholder.y
+    def save(self):
+        dic=Layer.save(self)
+        self.batchQueue.save(dic)
+        return dic
+    def start(self,sess):
+        self.batchQueue.start(sess)
+    def stop(self):
+        self.batchQueue.stop()
+
+class BatchProducerLayer(Layer):
+    def __init__(self,x=None,dic={}):
+        Layer.__init__(self,x,dic)
+        self._type="batchProducer"
+        self.ignore_batch=defaultinDict(dic,"ignore_batch",True)
+        self.ignore_size=defaultinDict(dic,"ignore_size",True)
+        self.batchProducer=BatchProducer(dic=dic)
+        self.y=self.batchProducer.batchData
+        placeholder=PlaceholderLayer(self.y,ignore_batch=self.ignore_batch,ignore_size=self.ignore_size)
+        self.y=placeholder.y
+    def save(self):
+        dic=Layer.save(self)
+        self.batchProducer.save(dic)
+        return dic
+    def start(self,sess):
+        self.batchProducer.start(sess)
+    def stop(self):
+        self.batchProducer.stop()'''
         
-    
-    
-    
+'''class GenLayer(Layer):
+    def __init__(self,x,n_rand=None,name=None,size=None,fSize=3,relu=True,dic={}):
+        Layer.__init__(self,x,name,dic)
+        self.size=defaultinDict(dic,"size",size)
+        self.fSize=defaultinDict(dic,"fsize",fSize)
+        self.n_rand=defaultinDict(dic,"n_rand",n_rand)
+        self.relu=defaultinDict(dic,"relu",relu)
+        self.pad=defaultinDict(dic,"pad","VALID")
+        self.randScale=defaultinDict(dic,"rand_scale",0.1)
+        self.scale=defaultinDict(dic,"scale",2)
+        assert(self.size!=None and self.n_rand!=None)
+        self.in_shape=np.array(x.get_shape().as_list()[1:3])
+        self.out_shape=self.in_shape*2
+        with tf.name_scope(self.name):
+            if self.scale==1:
+                self.out_shape=self.in_shape
+                self.x_scaled=x
+            else:          
+                self.out_shape=self.in_shape*self.scale
+                self.x_scaled=tf.image.resize_bilinear(x, self.out_shape)
+            self.rand_layer=tf.random_normal(tf.concat(0,[self.x_scaled.get_shape()[:3],[self.n_rand]]), mean=0.0, 
+                                         stddev=1.0,dtype=tf.float32, seed=None, name=None)
+            
+            
+            self.ws=tf.Variable(tf.random_normal(
+                    [self.fSize,self.fSize,self.x_scaled.get_shape()[3].value,self.n_rand], 0, self.randScale),name='ScaleWeights')
+            self.bs=tf.Variable(tf.random_normal([self.n_rand], self.randScale, self.randScale),name='ScaleBiases')
+            self.scale=tf.nn.bias_add(tf.nn.conv2d(self.x_scaled,self.ws,[1,1,1,1], "SAME"),self.bs)
+            self.rand_scaled=tf.mul(self.rand_layer,self.scale)
+            
+            self.combined=tf.concat(3,[self.x_scaled,self.rand_scaled])
+            self.filterShape=[self.fSize,self.fSize,self.combined.get_shape()[3].value,self.size]
+            self.w=tf.Variable(tf.random_normal(self.filterShape, 0, self.randScale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([self.size], self.randScale, self.randScale),name='Biases')
+            self.y=tf.nn.bias_add(tf.nn.conv2d(self.combined,self.w,[1,1,1,1], self.pad),self.b)
+            if self.relu:
+                self.y=tf.nn.relu(self.y)
+    def save(self,dic={}):
+        Layer.save(self,dic)
+        dic["type"]="generator"
+        dic["n_rand"]=self.n_rand
+        dic["size"]=self.size
+        dic["relu"]=self.relu
+        return dic
+    @staticmethod
+    def load(x,dic):
+        assert(dic["type"]=="generator")
+        return GenLayer(x,dic=dic)'''
     
 '''class Network:
     def __init__(self,x,layers=None,finish=True,softmax=True,dic={}):

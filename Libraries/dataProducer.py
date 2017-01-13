@@ -4,28 +4,6 @@ import os
 from utils import *
 #from IPython.display import clear_output, Image, display, HTML
 
-
-def convertData(File):
-    print("Converting file %s"%File)
-    assert(os.path.isfile(File+'.npy'))
-    with tf.device('/cpu:0'):
-        a=np.load(File+'.npy').astype(np.float32)
-        a=(a-a.mean())/a.std()
-        b=tf.Variable(tf.expand_dims(a,2))
-        c=tf.train.Saver({"data":b},max_to_keep=10000)
-    with tf.Session() as sess:
-        tf.initialize_all_variables().run()
-        #print(sess.run(b))
-        c.save(sess,File,write_meta_graph=False)
-    return list(a.shape)+[1]
-    #with tf.Session() as sess:
-        #tf.initialize_all_variables().run()
-        #c.restore(sess,File)
-        #d=sess.run(b)
-
-
-
-
 class DataProducer:
     def __init__(self,size,name="producer",mult=1,dic={}):
         self.name=defaultinDict(dic,"name",name)
