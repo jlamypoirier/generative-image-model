@@ -1,6 +1,6 @@
-import tensorflow as tf
 import numpy as np
-import os
+import tensorflow as tf
+#import os
 #from dataProducer import *
 
 
@@ -35,20 +35,22 @@ LayerFactory=_LayerFactory.build
 ###Basic layer
 class Layer:
     type="Identity"
-    def __init__(self,x,batch_norm=False,dropout=False,**kwargs):
+    def __init__(self,x,batch_norm=False,dropout=False,_cloned_layer=None,**kwargs):
         for a,b in enumerate(kwargs):
             print("Unknown argument: "+a)
-        self.type=self.__class__.type
-        self._x=x
+        self.type=self.__class__.type        #The type of the layer (user-friendly class name)
+        self._x=x                            #The input for the layer
         self.x=self._x
-        self.batch_norm=batch_norm
-        self.dropout=dropout
+        self.batch_norm=batch_norm           #Optional batch normalization on the input
+        self.dropout=dropout                 #Optional dropout on the input
         if self.batch_norm:
             mean,std=tf.nn.moments(x,range(len(self.x.get_shape().as_list())))
             self.x=(self.x-mean)/std
         if self.dropout:
             self.tf_keep_rate=tf.placeholder_with_default(np.float32(1.0),[])
             self.x=tf.nn.dropout(self.x,self.tf_keep_rate)
+        if _cloned_layer!=None:              #Used by the clone function, not for direct use
+            assert(self.type==_cloned_layer.type)
         self.y=self.x
     def save(self,**kwargs):
         kwargs["type"]=self.type
@@ -70,9 +72,40 @@ class Layer:
     def getIn(self):
         return self.x
     def start(self,sess):
-        return
+        self.sess=sess
     def stop(self):
-        return
+        self.sess=None                        
+    def copy(self,                            #Makes a copy of the graph, with a new variable set
+             x=None,                          #Feed a new input x or use the existing one (x=None)
+             manager=None                     #Specify a session manager for the new layer (Optional)
+             copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
+             **kwargs                         #Override some other arguments (risky if copy_vars=True)
+            ):    
+        new_layer=LayerFactory(x=x or self.x,self.save().update(kwargs))
+        if manager!=None:
+            manager.add([new_layer])
+        if copy_vars:
+            assert(manager!=None and manager.running)
+            self.copy_vars_to(layer)
+    def copy_vars_to(self,layer):#Copies the variables to another layer. The two layers must be identical
+        assert(self.sess!=None and self.sess==layer.sess)
+        self.sess.run(self.copy_vars_op(layer))
+    def copy_vars_op(self,layer):#Generates the copying operation but doesn't run it
+        old_vars=self.getVars()
+        new_vars=new_layer.getVars()
+        assert(len(old_vars)==len(new_vars))
+        for i in len(old_vars): #Check if the variables are compatible
+            assert(old_vars[i].get_shape().as_list()==new_vars[i].get_shape().as_list())
+        return [new_var.assign(old_vars[i]) for i,new_var in enumerate(new_vars)]
+    def clone(self,                           #Makes a copy of the graph, with a new variable set
+             x=None,                          #Feed a new input x or use the existing one (x=None)
+             manager=None                     #Specify a session manager for the new layer (Optional)
+             **kwargs                         #Override some other arguments (risky)
+            ):    
+        new_layer=LayerFactory(x=x or self.x,_cloned_layer=self,self.save().update(kwargs))
+        if manager!=None:
+            manager.add([new_layer])
+            
 
 ###Input and random layers
 class BasicInputLayer(Layer):
@@ -147,8 +180,12 @@ class LinearLayer(Layer):
         if len(shape)>1:
             self.y=tf.reshape(self.y,[-1,shape.num_elements()])
         self.shape=[shape.num_elements(),size]
-        self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
-        self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
+        if "_cloned_layer" in kwargs:
+            self.w=kwargs["_cloned_layer"].w
+            self.b=kwargs["_cloned_layer"].b
+        else:
+            self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
         self.y=tf.matmul(self.y,self.w)+self.b
     def save(self,**kwargs):
         kwargs["size"]=self.size
@@ -234,8 +271,12 @@ class ConvLayer(WindowLayer):
         #if self.input_channels==None:
         #    self.input_channels=self.y.get_shape()[3].value
         self.filter_shape=[self.window,self.window,self.input_channels,self.size]
-        self.w=tf.Variable(tf.random_normal(self.window, 0, self.rand_scale),name='Weights')
-        self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
+        if "_cloned_layer" in kwargs:
+            self.w=kwargs["_cloned_layer"].w
+            self.b=kwargs["_cloned_layer"].b
+        else:
+            self.w=tf.Variable(tf.random_normal(self.window, 0, self.rand_scale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
         self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b)
         if self.relu:
             self.y=tf.nn.relu(self.y)
@@ -278,6 +319,11 @@ class Composite(Layer): #Common elements of composite layers (abstract class)
     def __init__(self,x,layers=[],**kwargs):
         Layer.__init__(self,x,**kwargs)
         self._layers=layers                  #Definition of the layers
+        if "_cloned_layer" in kwargs:
+            cloned=kwargs["_cloned_layer"].layers
+            assert(len(_layers)==len((cloned))
+            for i,_layer in enumerate(_layers):
+                _layer["_cloned_layer"]=cloned[i]
         self.layers=[]
     def save(self,**kwargs):
         kwargs["layers"]=[layer.save() for layer in self.layers]
@@ -397,162 +443,4 @@ class ConvNet(BasicNetwork):
         dic["layers"][-1]["stride"]=self.last_stride
         BasicNetwork.__init__(self,x,dic)'''
         
-'''class NetworkSaver:
-    def __init__(self,network):#Takes a layer or network
-        self.network=network
-        self.saveDict={}
-        for i,var in enumerate(network.getVars()):
-            self.saveDict["var_%i"%i]=var
-        self.saver = tf.train.Saver(self.saveDict,max_to_keep=10000)
-        self.reset_op=tf.variables_initializer(network.getVars())
-        self.sess=None
-    def save(self,folder,safe=True):
-        assert(self.sess!=None)
-        File=fixDir(folder)+"/vars.ckpt"
-        if safe:
-            assert(not os.path.isfile(File))
-        print(File)
-        return self.saver.save(self.sess,File,write_meta_graph=False)
-    def start(self,sess):
-        self.sess=sess
-    def stop(self):
-        self.sess=None
-    def load(self,folder):
-        assert(self.sess!=None)
-        return self.saver.restore(self.sess,folder+"/vars.ckpt")
-    def init(self):
-        self.sess.run(self.reset_op)
-        
-class SessManager:
-    def __init__(self,networks):
-        self.networks=networks #Doesn't need to be a network, just need start and stop functions
-        self.coord = tf.train.Coordinator()
-        self.running=False
-    def add(self,networks):
-        #assert(not self.running)
-        self.networks+=networks
-        if self.running:
-            for network in networks:
-                network.start(self.sess)
-    def start(self):
-        assert(not self.running)
-        print("Starting new session")
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth=True
-        #config.gpu_options.per_process_gpu_memory_fraction=0.
-        self.sess=tf.InteractiveSession(config=config)
-        tf.global_variables_initializer().run()
-        self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
-        for network in self.networks:
-            network.start(self.sess)
-        self.running=True
-        return self.sess
-    def stop(self):
-        assert(self.running)
-        print("Ending session")
-        for network in self.networks:
-            network.stop()
-        self.coord.request_stop()
-        self.coord.join(self.threads)
-        self.sess.close()
-        self.running=False
-    def maybe_end(self):
-        if self.running:
-            self.stop()
-    def maybe_start(self):
-        if not self.running:
-            self.start()
-    def get(self):
-        self.maybe_start()
-        return self.sess
-    def clean(self):#Destroy everything
-        global resize
-        self.stop()
-        tf.reset_default_graph()
-        resize = tffunc(np.float32, np.int32)(resize_)
-        gc.collect()
-        
-class NetworkTrainer:
-    def __init__(self,network,loss,dic={}):
-        self.network=network
-        self.loss=loss
-        self.learnRate=defaultinDict(dic,"learnRate",0.01)
-        self.l2regMul=defaultinDict(dic,"l2regMul",1e-8)
-        self.momentum=defaultinDict(dic,"momentum",.9)
-        self.tf_dropout_rates=network.getDropout()
-        self.keep_rate=defaultinDict(dic,"keep_rate",1.0)
-        self.tf_l2regMul=tf.placeholder(tf.float32)
-        self.tf_learnRate=tf.placeholder(tf.float32)
-        self.tf_momentum=tf.placeholder(tf.float32)
-        self.var_list=network.getVars()
-        self.l2reg=tf.mul(tf.reduce_sum(tf.pack([tf.nn.l2_loss(var) for var in self.var_list])),self.tf_l2regMul)
-        self.loss_full=tf.add(self.loss,self.l2reg)
-        self.train_step = tf.train.MomentumOptimizer(self.tf_learnRate,self.tf_momentum).minimize(
-            self.loss_full,var_list=self.var_list)
-        self.sess=None
-    def start(self,sess):
-        self.sess=sess
-    def stop(self):
-        self.sess=None
-    def train(self,n,dic={}):
-        assert(self.sess!=None)
-        feed_dict={self.tf_learnRate:self.learnRate,self.tf_l2regMul:self.l2regMul,
-                                                self.tf_momentum:self.momentum}
-        for rate in self.tf_dropout_rates:
-            feed_dict[rate]=self.keep_rate
-        feed_dict.update(dic)
-        #print(feed_dict)
-        for i in range(n):
-            self.sess.run(self.train_step,feed_dict=feed_dict)
-    def evaluate(self,n=10,print_=True):
-        assert(self.sess!=None)
-        loss=np.mean([self.sess.run(self.loss) for k in range(n)])
-        if print_:
-            print(loss)
-        return (loss)
-    
-
-class ClassifierTrainer(NetworkTrainer):
-    def __init__(self,network,labels,logits=None,dic={},extra_loss=None,sigmoid=False):
-        self.labels=labels
-        self.logits=logits
-        if logits==None: self.logits=network.y
-        if logits.get_shape()[-1].value in [1,None]:#Need fix
-            self.cross_entropy=tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(self.logits,self.labels))
-        else:
-            self.cross_entropy=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(self.logits,self.labels))
-        loss=self.cross_entropy
-        if extra_loss!=None:
-            loss+=extra_loss
-        NetworkTrainer.__init__(self,network,loss,dic)
-        if sigmoid or logits.get_shape()[-1].value==1:
-            print("sigmoid")
-            self.sigmoidLayer=BasicSigmoid(self.logits)
-            self.y=self.sigmoidLayer.get()
-            self.wrong_prediction = tf.not_equal(tf.greater(self.y, 0.5), tf.greater(self.labels, 0.5))
-        else:
-            print("softmax")
-            self.softmaxLayer=BasicSoftmax(self.logits)
-            self.y=self.softmaxLayer.get()
-            self.wrong_prediction = tf.not_equal(tf.argmax(self.y, 1), tf.argmax(self.labels, 1))
-        self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))
-        #self.error_rate=tf.sub(1.,self.accuracy)
-    def evaluate(self,n=10,print_=True):
-        assert(self.sess!=None)
-        e=np.array([self.sess.run([self.cross_entropy,self.error_rate]) for k in range(n)])
-        loss=np.mean(e[:,0])
-        error=np.mean(e[:,1])
-        if print_:
-            print((loss,error))
-        return (loss,error)
-    
-class ClassifierArrayTrainer(ClassifierTrainer):
-    def __init__(self,network,labels,logits=None,dic={},extra_loss=None,sigmoid=False):
-        if logits==None: logits=network.y
-        #print(logits.get_shape().as_list())
-        size=tf.shape(logits)
-        labels=tf.tile(tf.expand_dims(tf.expand_dims(labels,1),1),tf.concat(0,[[1],size[1:3],[1]]))
-        ClassifierTrainer.__init__(self,network,tf.reshape(labels,[-1,size[3]]),
-                                   tf.reshape(logits,[-1,size[3]]),dic,extra_loss,sigmoid)
-'''   
-    
+                  
