@@ -36,8 +36,8 @@ LayerFactory=_LayerFactory.build
 class Layer:
     type="Identity"
     def __init__(self,x,batch_norm=False,dropout=False,_cloned_layer=None,**kwargs):
-        for a,b in enumerate(kwargs):
-            print("Unknown argument: "+a)
+        for kw in kwargs:
+            print("Unknown argument: "+kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer
         self.x=self._x
