@@ -1,15 +1,24 @@
 import numpy as np
 import tensorflow as tf
+import warnings
 #import os
 #from dataProducer import *
+
+
+
+
 
 
 class _LayerFactory:
     classes={}
     updated=False
+    _notAClassError="Argument is not a class: %s"
+    _subclassError="Argument is not a subclass of Layer: %s"
+    _layerTypeError="Unknown Layer type: %s"
     @staticmethod
     def _add_class(cl):
-        assert(isinstance(cl,type) and issubclass(cl,Layer))
+        assert(isinstance(cl,type)),self._notAClassError%cl
+        assert(issubclass(cl,Layer)), self._subclassError%cl
         if "type" in dir(cl):
             t=cl.type
         else:
@@ -28,16 +37,21 @@ class _LayerFactory:
     def build(type,*args,**kwargs):
         if not _LayerFactory.updated:
             _LayerFactory.update_classes()
-        assert(type in _LayerFactory.classes)
+        assert(type in _LayerFactory.classes), self._layerTypeError%type
         return(_LayerFactory.classes[type](*args,**kwargs))
 LayerFactory=_LayerFactory.build
 
 ###Basic layer
 class Layer:
     type="Identity"
+    _uncaughtArgumentWarning="Unknown argument: %s"
+    _clonedTypeError='Trying to clone layers of different type: "%s" vs "%s"'
+    _copyManagerError="Copying variable requires a manager with an active session"
+    _copySessionError="Copying variable requires both networks to have the same active session"
+    _copyNetworkError="Copying variable requires identical networks"
     def __init__(self,x,batch_norm=False,dropout=False,_cloned_layer=None,**kwargs):
         for kw in kwargs:
-            print("Unknown argument: "+kw)
+            warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer
         self.x=self._x
@@ -50,13 +64,17 @@ class Layer:
             self.tf_keep_rate=tf.placeholder_with_default(np.float32(1.0),[])
             self.x=tf.nn.dropout(self.x,self.tf_keep_rate)
         if _cloned_layer!=None:              #Used by the clone function, not for direct use
-            assert(self.type==_cloned_layer.type)
+            assert(self.type==_cloned_layer.type), self._clonedTypeError%(self.type,_cloned_layer.type)
         self.y=self.x
     def save(self,**kwargs):
         kwargs["type"]=self.type
         kwargs["dropout"]=self.dropout
         kwargs["batch_norm"]=self.batch_norm
         return kwargs
+    def _getLabels(self): #Need label producing layers
+        return None
+    def getLabels(self):
+        return self._getLabels() or (isinstance(self.x,Layer) and x.getLabels()) or None
     def get(self):
         return self.y
     def getVars(self):
@@ -77,32 +95,32 @@ class Layer:
         self.sess=None                        
     def copy(self,                            #Makes a copy of the graph, with a new variable set
              x=None,                          #Feed a new input x or use the existing one (x=None)
-             manager=None                     #Specify a session manager for the new layer (Optional)
+             manager=None,                     #Specify a session manager for the new layer (Optional)
              copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
              **kwargs                         #Override some other arguments (risky if copy_vars=True)
             ):    
-        new_layer=LayerFactory(x=x or self.x,self.save().update(kwargs))
+        new_layer=LayerFactory(x=x or self.x,**self.save().update(kwargs))
         if manager!=None:
             manager.add([new_layer])
         if copy_vars:
-            assert(manager!=None and manager.running)
+            assert(manager!=None and manager.running), self._copyManagerError
             self.copy_vars_to(layer)
     def copy_vars_to(self,layer):#Copies the variables to another layer. The two layers must be identical
-        assert(self.sess!=None and self.sess==layer.sess)
+        assert(self.sess!=None and self.sess==layer.sess), self._copySessionError
         self.sess.run(self.copy_vars_op(layer))
     def copy_vars_op(self,layer):#Generates the copying operation but doesn't run it
         old_vars=self.getVars()
-        new_vars=new_layer.getVars()
-        assert(len(old_vars)==len(new_vars))
+        new_vars=new_layer.getVars(),
+        assert(len(old_vars)==len(new_vars)),self._copyNetworkError
         for i in len(old_vars): #Check if the variables are compatible
-            assert(old_vars[i].get_shape().as_list()==new_vars[i].get_shape().as_list())
+            assert(old_vars[i].get_shape().as_list()==new_vars[i].get_shape().as_list()), self._copyNetworkError
         return [new_var.assign(old_vars[i]) for i,new_var in enumerate(new_vars)]
     def clone(self,                           #Makes a copy of the graph, with a new variable set
              x=None,                          #Feed a new input x or use the existing one (x=None)
-             manager=None                     #Specify a session manager for the new layer (Optional)
+             manager=None,                    #Specify a session manager for the new layer (Optional)
              **kwargs                         #Override some other arguments (risky)
             ):    
-        new_layer=LayerFactory(x=x or self.x,_cloned_layer=self,self.save().update(kwargs))
+        new_layer=LayerFactory(x=x or self.x,_cloned_layer=self,**self.save().update(kwargs))
         if manager!=None:
             manager.add([new_layer])
             
@@ -110,6 +128,8 @@ class Layer:
 ###Input and random layers
 class BasicInputLayer(Layer):
     type="Abstract"
+    _noInputError="Can't deduce the shape from the input: no input tensor given"
+    _dimensionError="The input tensor and the given shape have different dimension: %s vs %s"
     def __init__(self,x=None,shape=None,**kwargs):
         Layer.__init__(self,None,**kwargs)
         self._shape=shape                    #Shape of the tensor, or None to keep arbitrary, or -1 to deduce from x
@@ -118,14 +138,15 @@ class BasicInputLayer(Layer):
         if self.shape==None:
             pass
         elif self.shape<0:
-            assert(x!=None)
+            assert(x!=None), _noInputError
             self.shape=tf.shape(x)
         else:
             shape=self.shape
             self.var_dim=self.var_dim or None in self.shape
             for i,s in enumerate(self.shape):
                 if s!=None and s<0:
-                    assert(x!=None and tf.shape(x).ndims==len(shape))
+                    assert(x!=None), _noInputError
+                    assert(tf.shape(x).ndims==len(shape)), _dimensionError%(tf.shape(x).ndims,len(shape))
                     shape[i]=tf.shape(x)[i]
             self.shape=tf.concat(0,shape)
     def save(self,**kwargs):
@@ -150,12 +171,13 @@ class InputLayer(BasicInputLayer):
     
 class RandomLayer(BasicInputLayer):
     type="Random"
+    _shapeError="Random layer must have a fixed shape"
     def __init__(self,x=None,rand_type="normal",scale=1.,mean=0.,**kwargs):
         BasicInputLayer.__init__(self,x,**kwargs)
         self.rand_type=rand_type             #normal or uniform generator
         self.scale=scale                     #scale for the distribution (std or half-range)
         self.mean=mean                       #mean for the distribution
-        assert(not self.var_dim)             #Shape tensor must be known
+        assert(not self.var_dim), self._shapeError
         if self.rand_type=="normal":
             self.y=tf.random_normal(self.shape, mean=self.mean, 
                                     stddev=self.scale,dtype=tf.float32)
@@ -171,11 +193,10 @@ class RandomLayer(BasicInputLayer):
 ###Linear and related layers
 class LinearLayer(Layer):
     type="Linear"
-    def __init__(self,x,size=None,rand_scale=0.1,**kwargs):
+    def __init__(self,x,size=1,rand_scale=0.1,**kwargs):
         Layer.__init__(self,x,**kwargs)
         self.size=size                       #Number of output channels
         self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
-        assert(size!=None)
         shape=self.y.get_shape()[1:]
         if len(shape)>1:
             self.y=tf.reshape(self.y,[-1,shape.num_elements()])
@@ -259,14 +280,12 @@ class WindowLayer(Layer): #Common elements of convolution and pooling (abstract 
         
 class ConvLayer(WindowLayer):
     type="Convolution"
-    def __init__(self,x,size=None,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
+    def __init__(self,x,size=1,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
         WindowLayer.__init__(self,x,**kwargs)
         self.size=size                       #Number of output channels
         self.relu=relu                       #Optional relu on the output
         self._input_channels=input_channels  #(Optional) overrides the number of input channels, needed for variable size input
         self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
-        
-        assert(self.size!=None)
         self.input_channels=self._input_channels or self.y.get_shape()[3].value
         #if self.input_channels==None:
         #    self.input_channels=self.y.get_shape()[3].value
@@ -293,6 +312,7 @@ class ConvLayer(WindowLayer):
     
 class PoolLayer(WindowLayer):
     type="Pool"
+    _poolTypeError="Invlid pooling type: %s"
     def __init__(self,x,pool_type="max",stride=2,**kwargs):
         WindowLayer.__init__(self,x,stride=stride**kwargs)
         self.pool_type=pool_type             #avg or max pooling 
@@ -305,7 +325,7 @@ class PoolLayer(WindowLayer):
             self.y=tf.nn.avg_pool(self.y, ksize=self.ksize, 
                       strides=self.strides,padding=self.pad)
         else: 
-            assert(False)
+            raise Exception(self._poolTypeError%self.pool_type)
     def save(self,**kwargs):
         kwargs["pool_type"]=self.pool_type
         return WindowLayer.save(self,**kwargs)
@@ -316,12 +336,13 @@ class PoolLayer(WindowLayer):
 ###Layer combining and composition
 class Composite(Layer): #Common elements of composite layers (abstract class)
     type="Abstract"
+    _clonedSublayerError="Trying to clone networks with a different number of sublayers: %s vs %s"
     def __init__(self,x,layers=[],**kwargs):
         Layer.__init__(self,x,**kwargs)
         self._layers=layers                  #Definition of the layers
         if "_cloned_layer" in kwargs:
             cloned=kwargs["_cloned_layer"].layers
-            assert(len(_layers)==len((cloned))
+            assert(len(_layers)==len(cloned)), self._clonedSublayerError%(len(_layers),len(cloned))
             for i,_layer in enumerate(_layers):
                 _layer["_cloned_layer"]=cloned[i]
         self.layers=[]
@@ -344,15 +365,19 @@ class Composite(Layer): #Common elements of composite layers (abstract class)
         #return rates
 
 class SimpleCombine:#Auxiliary class to Combine
+    _combineTypeError="Invlid combine type: %s"
+    _combineLengthError="Combine operation %s takes exactly 2 arguments (%s given)"
+    _combineShapeError="Shapes %s and %s are incompatible for the combine operation %s"
     def __init__(self,x,combine_op="combine"):
         self.x=x
         shapes=[_x.get_shape().as_list() for _x in self.x]
+        assert(self.compatible(shapes,combine_op)), self._combineShapeError%(shapes[0],shape,combine_op)
         if combine_op=="combine":
             self.y=tf.concat(len(shapes[0])-1,self.x)
         elif combine_op=="combine_batch":
             self.y=tf.concat(0,self.x)
         elif combine_op=="sub":
-            assert(len(x)==2)
+            assert(len(x)==2), self._combineLengthError%(combine_op,len(x))
             self.y=tf.sub(self.x[0],self.x[1])
         elif combine_op=="mult":
             if len(x)==2:
@@ -360,7 +385,23 @@ class SimpleCombine:#Auxiliary class to Combine
             else:
                 self.y=tf.reduce_prod(tf.pack(self.x),[0])
         else:
-            assert(False)
+            raise Exception(self._combineTypeError%combine_op)
+    @staticmethod
+    def compatible(shapes,combine_op):
+        for shape in shapes[1:]:
+            if len(shapes[0])!=len(shape): 
+                return False
+            if combine_op=="combine": 
+                if shapes[0][:-1]!=shape[:-1]: 
+                    return False
+            elif combine_op=="combine_batch": 
+                if shapes[0][1:]!=shape[1:]: 
+                    return False
+            else: 
+                if shapes[0]!=shape: 
+                    return False
+        return True
+        
             
 class CombineLayer(Composite): #Combines layers in a parallel way
     type="Combine"
@@ -390,7 +431,7 @@ class Network(Composite):
 class RandomCombineLayer(CombineLayer):
     type="Random_Combined"
     def __init__(self,x,channels=1,**kwargs):
-        layers=[{"Type":"Identity"},kwargs.update({"Type":"Random",shape=[-1 for i in range(x.get_shape().ndims-1)]+[channels]})]
+        layers=[{"Type":"Identity"},kwargs.update({"Type":"Random","shape":[-1 for i in range(x.get_shape().ndims-1)]+[channels]})]
         CombineLayer.__init__(self,x,layers=layers)
     def save(self,**kwargs):
         kwargs=self.layers[1].save(kwargs)
