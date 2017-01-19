@@ -1,6 +1,6 @@
 import numpy as np
 import tensorflow as tf
-import os, gc
+import os, warnings
 from nnLayer import *
 
 
@@ -66,8 +66,8 @@ class Optimizer(Trainer):
     type="Abstract"
     _optimizerTypeError="Invlid optimizer type: %s"
     _noLossError="Can't finish the trainer: no loss function given"
-    _noNetworkError="Can't finish the trainer: no loss network given"
-    def __init__(self,network=None,loss=None,optimizer="",finish=None,regularize=True,dropout=True,**kwargs):
+    _noNetworkError="Can't finish the trainer: no network given"
+    def __init__(self,network=None,loss=None,optimizer="adam",finish=None,regularize=True,dropout=True,**kwargs):
         Trainer.__init__(self)
         self.network=network         #The trained network
         self.regularize=regularize   #Enable or disable l2 regularization
@@ -99,7 +99,7 @@ class Optimizer(Trainer):
             self.finish()
     def finish(self,network=None,loss=None):
         self.loss=loss or self.loss or raise Exception(self._noLossError)     #Use the parameters from the constructor if none given
-        self.network=network or self.network Exception(self._noNetworkError)  #Explodes if the constructor also had none given
+        self.network=network or self.network or raise Exception(self._noNetworkError)  #Explodes if the constructor also had none given
         self.vars=network.getVars()
         if self.regularize:
             self.tf_l2reg=tf.mul(tf.reduce_sum(tf.pack([tf.nn.l2_loss(var) for var in self.vars])),self.l2reg)
@@ -114,21 +114,30 @@ class Optimizer(Trainer):
 
 class ClassifierTrainer(NetworkTrainer):
     type="Classifier"
-    def __init__(self,labels,network=None,logits=None,sigmoid=None,array=False,**kwargs):
+    _lossError="Loss function fed to classifier, must feed labels"
+    _noLabelsError="Can't finish the trainer: no labels given"
+    def __init__(self,labels=None,logits=None,sigmoid=None,array=False,**kwargs):
         self.labels=labels
-        self.logits=logits or network.get()
-        if array: #Fixes the dimension of the logits when the classifier results in an array (Equiv to avg pooling layer)
+        self.logits=logits
+        self.sigmoid=sigmoid
+        self.array=array
+        NetworkTrainer.__init__(self,**kwargs)
+    def finish(self,network=None,loss=None,labels=None,logits=None):
+        assert(not(loss or self.loss)), self._lossError
+        self.network=network or self.network or raise Exception(self._noNetworkError)
+        self.labels=labels or self.labels or network.getInputLabels() or raise Exception(self._noLabelsError)
+        self.logits=logits or self.logits or network.get()
+        if self.array: #Fixes the dimension of the logits when the classifier results in an array (Equiv to avg pooling layer)
             array_dim= self.logits.get_shape().ndims-2  #logits is 2d tensor
             if array_dim>0:
                 self.logits=tf.reduce_mean(self.logits,axis=range(1,array_dim+1))
-        if sigmoid==None:
-            sigmoid=logits.get_shape()[-1].value==1
-        if sigmoid:
+        if self.sigmoid==None:
+            self.sigmoid=self.logits.get_shape()[-1].value==1
+        if self.sigmoid:
             self.cross_entropy=tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(self.logits,self.labels))
         else:
             self.cross_entropy=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(self.logits,self.labels))
-        NetworkTrainer.__init__(self,network=network,loss=self.cross_entropy,**kwargs)
-        if sigmoid:
+        if self.sigmoid:
             self.sigmoidLayer=SimpleSigmoid(self.logits)
             self.y=self.sigmoidLayer.get()
             self.wrong_prediction = tf.not_equal(tf.greater(self.y, 0.5), tf.greater(self.labels, 0.5))
@@ -137,7 +146,7 @@ class ClassifierTrainer(NetworkTrainer):
             self.y=self.softmaxLayer.get()
             self.wrong_prediction = tf.not_equal(tf.argmax(self.y, 1), tf.argmax(self.labels, 1))
         self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))
-        #self.error_rate=tf.sub(1.,self.accuracy)
+        Optimizer.finish(self,loss=self.cross_entropy)
     def eval_error(self,n=10,print_=True,print_loss=False):
         self.ensure_running()
         e=np.array([self.sess.run([self.loss,self.error_rate]) for k in range(n)])
@@ -148,4 +157,36 @@ class ClassifierTrainer(NetworkTrainer):
         if print_:
             print("Error rate: %s"%error)
         return (loss,error)
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
     

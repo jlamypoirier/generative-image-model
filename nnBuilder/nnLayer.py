@@ -74,7 +74,9 @@ class Layer:
     def _getLabels(self): #Need label producing layers
         return None
     def getLabels(self):
-        return self._getLabels() or (isinstance(self.x,Layer) and x.getLabels()) or None
+        return self._getLabels() or self.getInputLabels()
+    def getInputLabels(self):
+        return (isinstance(self.x,Layer) and x.getLabels()) or None
     def get(self):
         return self.y
     def getVars(self):
