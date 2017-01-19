@@ -34,16 +34,20 @@ class NetworkSaver:
 
 #Handles the session stuff
 class SessManager:
-    def __init__(self,networks):
-        self.networks=networks               #The managed networks, a set of layers or anything with start and stop functions
-        self.coord = tf.train.Coordinator()
+    def __init__(self,*args):
         self.running=False
-    def add(self,networks):
+        self.networks=[]
+        self.add(*args)  #The managed networks or lists of networks, a set of layers or anything with start and stop functions
+        self.coord = tf.train.Coordinator()
+    def add(self,*args):
         #assert(not self.running)
-        self.networks+=networks
-        if self.running:
-            for network in networks:
-                network.start(self.sess)
+        for networks in args:
+            if type(networks)!=list:
+                networks=[networks]
+            self.networks+=networks
+            if self.running:
+                for network in networks:
+                    network.start(self.sess)
     def start(self):
         assert(not self.running)
         print("Starting new session")
@@ -54,9 +58,12 @@ class SessManager:
         tf.global_variables_initializer().run()
         self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
         for network in self.networks:
-            network.start(self,self.sess)
+            network.start(self.sess)
         self.running=True
         return self.sess
+    def run(self,*args,**kwargs):
+        self.maybe_start()
+        return self.sess.run(*args,**kwargs)
     def stop(self):
         assert(self.running)
         print("Ending session")
