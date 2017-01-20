@@ -21,7 +21,7 @@ class NetworkSaver:
         if safe:
             assert(not os.path.isfile(File))
         print(File)
-        return self.saver.save(self.sess,File,write_meta_graph=False)
+        return self.saver.save(self.sess,os.path.abspath(File),write_meta_graph=False)
     def start(self,sess):
         self.sess=sess
     def stop(self):

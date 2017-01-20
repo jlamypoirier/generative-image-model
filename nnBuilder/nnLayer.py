@@ -139,71 +139,7 @@ class SimpleLayer:
             manager.add([new_layer])
             
 
-###Input and random layers
-class BasicInputLayer(SimpleLayer):
-    type="Abstract"
-    _noInputError="Can't deduce the shape from the input: no input tensor given"
-    _dimensionError="The input tensor and the given shape have different dimension: %s vs %s"
-    def __init__(self,shape=None,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self._shape=shape                    #Shape of the tensor, or None to keep arbitrary, or -1 to deduce from x
-        self.shape=shape                     #Can set individual components to None or -1
-        self.var_dim=self.shape==None
-        if self.shape==None:
-            pass
-        elif self.shape<0:
-            assert(x!=None), _noInputError
-            self.shape=tf.shape(x)
-        else:
-            shape=self.shape
-            self.var_dim=self.var_dim or None in self.shape
-            for i,s in enumerate(self.shape):
-                if s!=None and s<0:
-                    assert(x!=None), _noInputError
-                    assert(tf.shape(x).ndims==len(shape)), _dimensionError%(tf.shape(x).ndims,len(shape))
-                    shape[i]=tf.shape(x)[i]
-            self.shape=tf.concat(0,shape)
-    def save(self,**kwargs):
-        kwargs["shape"]=self._shape
-        return SimpleLayer.save(self,**kwargs)
 
-
-class PlaceholderLayer(BasicInputLayer):     
-    #Warning: TensorFlow doesn't always like these:
-    #    Doesn't work with derivatives even if no input is fed
-    #    Whole shape is forgotten if any component is set to None
-    type="Placeholder"
-    def __init__(self,ignore_shape=False,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
-        self.y=tf.placeholder_with_default(self.y,self.shape)
-
-class InputLayer(BasicInputLayer):
-    type="Input"
-    def __init__(self,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
-        self.y=tf.placeholder(dtype=tf.float32,shape=self.shape)
-    
-class RandomLayer(BasicInputLayer):
-    type="Random"
-    _shapeError="Random layer must have a fixed shape"
-    def __init__(self,rand_type="normal",scale=1.,mean=0.,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
-        self.rand_type=rand_type             #normal or uniform generator
-        self.scale=scale                     #scale for the distribution (std or half-range)
-        self.mean=mean                       #mean for the distribution
-        assert(not self.var_dim), self._shapeError
-        if self.rand_type=="normal":
-            self.y=tf.random_normal(self.shape, mean=self.mean, 
-                                    stddev=self.scale,dtype=tf.float32)
-        elif self.rand_type=="uniform":
-            self.y=tf.random_uniform(self.shape,minval=self.mean-self.scale,
-                                     maxval=self.mean+self.scale,dtype=tf.float32)
-    def save(self,**kwargs):
-        kwargs["rand_type"]=self.rand_type
-        kwargs["scale"]=self.scale
-        kwargs["mean"]=self.mean
-        return BasicInputLayer.save(self,**kwargs)
-    
 ###Linear and related layers
 class LinearLayer(SimpleLayer):
     type="Linear"
