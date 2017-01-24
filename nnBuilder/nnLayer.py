@@ -106,7 +106,10 @@ class SimpleLayer:
     def start(self,sess):
         self.sess=sess
     def stop(self):
-        self.sess=None                        
+        self.sess=None
+    def run(self):
+        assert(self.sess!=None),"No active session"
+        return self.sess.run(self.y)
     def copy(self,                            #Makes a copy of the graph, with a new variable set
              x=None,                          #Feed a new input x or use the existing one (x=None)
              manager=None,                     #Specify a session manager for the new layer (Optional)
@@ -301,8 +304,10 @@ class Composite(SimpleLayer): #Common elements of composite layers (abstract cla
         #kwargs["layers"]=self._layers
         return SimpleLayer.save(self,**kwargs)
     def start(self,sess):
+        SimpleLayer.start(self,sess)
         for layer in self.layers: layer.start(sess) 
     def stop(self):
+        SimpleLayer.stop(self)
         for layer in self.layers: layer.stop() 
     def getWeights(self):
         return SimpleLayer.getWeights(self)+[weight for layer in self.layers for weight in layer.getWeights()]

@@ -1,10 +1,11 @@
 import numpy as np
 import tensorflow as tf
 import os
-from IPython.display import Image
+from IPython.display import clear_output, Image, display, HTML
 import PIL.Image
 from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.pyplot as plt
+from io import BytesIO
 
 def defaultinDict(dic,entry,default=None):
     if entry in dic:
@@ -13,13 +14,13 @@ def defaultinDict(dic,entry,default=None):
 
 def fixDir(dir_):
     if not os.path.exists(dir_):
-        os.mkdir(dir_)
+        os.makedirs(dir_)
     return dir_
 def safeDir(dir_):
     assert(not os.path.exists(dir_))
     return dir_
 
-def showarray(a, fmt='jpeg'):
+def show(a, fmt='jpeg'):
     a = np.uint8((a-a.min())*255./(a.max()-a.min()))
     f = BytesIO()
     PIL.Image.fromarray(a).save(f, fmt)
