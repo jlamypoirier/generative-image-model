@@ -2,7 +2,10 @@ import numpy as np
 import tensorflow as tf
 import warnings
 from nnLayer import *
+from _nnUtils import *
 import os
+import sys
+import tarfile
 import PIL.Image
 from tensorflow.examples.tutorials.mnist import input_data as mnist
 
@@ -25,7 +28,7 @@ def load_data(file):
     
 def saveTf(file,data):#No proper cleanup
     with tf.device('/cpu:0'):#Avoid wasting gpu memory
-        tf_data=tf.Variable(data)
+        tf_data=tf.Variable(data,dtype=tf.float32)
         saver=tf.train.Saver({"data":tf_data},max_to_keep=10000)
     with tf.Session() as sess:
         tf.global_variables_initializer().run()
@@ -114,11 +117,10 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         self.normalize=normalize
         self.file_data=None
         self.file_path=os.path.join(folder,file)
-        assert(os.path.isfile(file)), 'Cannot find file "%s"'%file
         if self.convert_file:
             self.tf_file_path=self.file_path+".tf"
-            self.shape_file_path=self.file_path+".shape"
-            if os.path.isfile(self.tf_file_path) and os.path.isfile(self.shape_file_path):
+            self.shape_file_path=self.file_path+".shape.npy"
+            if os.path.isfile(self.tf_file_path+".index") and os.path.isfile(self.shape_file_path):
                 self.shape=np.load(self.shape_file_path)
             else:
                 self.load_file()
@@ -136,6 +138,7 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.saver.restore(self.sess,os.path.abspath(self.tf_file_path))
     def load_file(self):
         if self.file_data==None:
+            assert(os.path.isfile(self.file)), 'Cannot find file "%s"'%self.file
             self.file_data=load_data(self.file_path)
             self.shape=self.file_data.shape
             if self.normalize:
@@ -156,27 +159,44 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
 
 
 
-
-
-
-
-
-
-
-
-
-
 #Batch Generators
 class DataLayer(SimpleLayer):
     type="Abstract"
-    def __init__(self,batch=None,**kwargs):
+    def __init__(self,batch=32,**kwargs):
         SimpleLayer.__init__(self,**kwargs)
         self.batch=batch                #The number of elements in a batch
     def save(self,**kwargs):
         kwargs["batch"]=self.batch
         return Layer.save(self,**kwargs)
 
-class MNISTLayer(DataLayer):
+
+class BatchLayer(DataLayer): #Broadcasts a tensor into a batch of identical tensors
+    type="Batch"
+    def __init__(self,**kwargs):
+        DataLayer.__init__(self,**kwargs)
+        self.y=tf.tile(tf.expand_dims(self.y,axis=0), [self.batch]+[1]*self.y.get_shape().ndims)
+        
+        
+        
+        
+        
+        
+class RandomCropLayer(SimpleLayer):
+    type="Random_Crop"
+    def __init__(self,shape=None,batch=False,**kwargs):
+        SimpleLayer.__init__(self,**kwargs)
+        self.shape=shape
+        self.batch=batch                #If true, perform the operation on a batch
+        if self.batch:
+            fn=lambda x:tf.random_crop(x,self.shape)
+            self.y=tf.map_fn(fn, self.y, parallel_iterations=1024)
+        else:
+            self.y=tf.random_crop(self.y,self.shape)
+
+
+
+#Standard datasets
+class MNISTLayer(DataLayer): 
     type="MNIST"
     def __init__(self,folder='/tmp/tensorflow/mnist/input_data',**kwargs):
         DataLayer.__init__(self,**kwargs)
@@ -190,23 +210,63 @@ class MNISTLayer(DataLayer):
         return Layer.save(self,**kwargs)
 
 
-class RandomCropLayer(DataLayer):
-    type="Random_Crop"
-    def __init__(self,**kwargs):
-        DataLayer.__init__(self,shape,**kwargs)
-        self.shape=shape
+class CIFARLayer(DataLayer):
+    type="CIFAR_10"
+    def __init__(self,folder='/tmp/cifar10_data',**kwargs):
+        self.folder=folder
+        self.url='http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
+        self.file_name = self.url.split('/')[-1]
+        self.file_path = os.path.join(self.folder, self.file_name)
+        self.file_base_name=self.file_name.split(".")[0]
+        self.file_base_path=os.path.join(self.folder,self.file_base_name)
+        self.tf_file_path=self.file_base_path+".tf"
+        self.label_file_path=self.file_base_path+".labels.npy"
+        self.shape_file_path=self.file_base_path+".shape.npy"
+        if not (os.path.isfile(self.tf_file_path+".index") and os.path.isfile(self.label_file_path) and os.path.isfile(self.shape_file_path)):
+            self.convert_data()
+        self.data=ConstantLayer(folder=self.folder,file=self.file_base_name,convert_file=True,normalize=True)
+        self.y=self.data.y
+    def save(self,**kwargs):
+        kwargs["folder"]=self.folder
+        return Layer.save(self,**kwargs)
+    def start(self,sess):
+        SimpleLayer.start(self,sess)
+        self.data.start(sess) 
+    def stop(self):
+        SimpleLayer.stop(self)
+        self.data.stop() 
+    def download(self):#Based on https://github.com/tensorflow/models/tree/master/tutorials/image/cifar10
+        if not os.path.exists(self.file_path):
+            from six.moves import urllib
+            fixDir(self.folder)
+            def _progress(count, block_size, total_size):
+                sys.stdout.write('\r>> Downloading %s %.1f%%' % (self.file_name,
+                                                                 float(count * block_size) / float(total_size) * 100.0))
+                sys.stdout.flush()
+            urllib.request.urlretrieve(self.url, self.file_path, _progress)
+            print()
+            statinfo = os.stat(self.file_path)
+            print('Successfully downloaded', self.file_name, statinfo.st_size, 'bytes.')
+        tarfile.open(self.file_path, 'r:gz').extractall(self.folder)
+    def convert_data(self):
+        import pickle
+        self.download()
+        files=["data_batch_%i"%i for i in range(1,6)]
+        folder=os.path.join(self.folder,"cifar-10-batches-py")
+        def unpickle(f):
+            file = open(f, 'rb')
+            dic = pickle.load(file,encoding='latin1')
+            file.close()
+            return dic
+        dics=[unpickle(os.path.join(folder,file)) for file in files]
+        data=np.moveaxis(np.array([dic['data'] for dic in dics]).reshape([50000,3,32,32]),1,3).astype(np.float32)
+        labels=np.array([dic['labels'] for dic in dics]).reshape([50000])
+        saveTf(self.tf_file_path,data)
+        np.save(self.label_file_path,labels)
+        np.save(self.shape_file_path,[50000,32,32,3])
         
         
-    
-
-
-
-
-
-
-
-
-
+        
 
 
 
