@@ -60,6 +60,7 @@ class SimpleLayer:
         self.batch_norm=batch_norm           #Optional batch normalization on the input
         self.dropout=dropout                 #Optional dropout on the input
         self.y=self.x
+        self.sublayers=[]
         if isinstance(self.y,SimpleLayer):
             self.y=self.y.get()
             self._x=self._x.get()
@@ -78,6 +79,8 @@ class SimpleLayer:
         return kwargs
     def _getLabels(self): #Need label producing layers
         if "labels" in dir(self):
+            if isinstance(self.labels,SimpleLayer):
+                return self.labels.get()
             return self.labels
         return None
     def getLabels(self):
@@ -89,24 +92,30 @@ class SimpleLayer:
         if isinstance(self.x,SimpleLayer):
             return self.x.getLabels()
         return None
+    def add_sublayer(self,sublayer):
+        self.sublayers.append(sublayer)
+        return sublayer
     def get(self):
         return self.y
     def getVars(self):
         return self.getWeights()+self.getBiases()
     def getWeights(self):
-        return []
+        return [weight for sublayer in self.sublayers for weight in sublayer.getWeights()]
     def getBiases(self):
-        return []
+        return [bias for sublayer in self.sublayers for bias in sublayer.getBiases()]
     def getDropout(self):
+        keep_rate=[rate for sublayer in self.sublayers for rate in sublayer.getDropout()]
         if self.dropout:
-            return [self.tf_keep_rate]
-        return []
+            keep_rate+=[self.tf_keep_rate]
+        return keep_rate
     def getIn(self):
         return self.x
     def start(self,sess):
         self.sess=sess
+        for sublayer in self.sublayers: sublayer.start(sess) 
     def stop(self):
         self.sess=None
+        for sublayer in self.sublayers: sublayer.stop() 
     def run(self):
         assert(self.sess!=None),"No active session"
         return self.sess.run(self.y)
@@ -182,7 +191,7 @@ class ReluLayer(LinearLayer):
     type="Relu"
     def __init__(self,**kwargs):
         LinearLayer.__init__(self,**kwargs)
-        self.relu=SimpleRelu(x=self.y)
+        self.relu=self.add_sublayer(SimpleRelu(x=self.y))
         self.y=self.relu.y
         
 class SimpleSoftmax(SimpleLayer):
@@ -195,7 +204,7 @@ class SoftmaxLayer(LinearLayer):
     type="Softmax"
     def __init__(self,**kwargs):
         LinearLayer.__init__(self,**kwargs)
-        self.softmax=SimpleSoftmax(x=self.y)
+        self.softmax=self.add_sublayer(SimpleSoftmax(x=self.y))
         self.y=self.softmax.y
         
 class SimpleSigmoid(SimpleLayer):
@@ -208,7 +217,7 @@ class SigmoidLayer(LinearLayer):
     type="Sigmoid"
     def __init__(self,**kwargs):
         LinearLayer.__init__(self,**kwargs)
-        self.sigmoid=SimpleSigmoid(x=self.y)
+        self.sigmoid=self.add_sublayer(SimpleSigmoid(x=self.y))
         self.y=self.sigmoid.y
         
 class QuadLayer(LinearLayer):
@@ -300,21 +309,9 @@ class Composite(SimpleLayer): #Common elements of composite layers (abstract cla
                 _layer["_cloned_layer"]=cloned[i]
         self.layers=[]
     def save(self,**kwargs):
-        kwargs["layers"]=[layer.save() for layer in self.layers]
+        kwargs["layers"]=[sublayer.save() for sublayer in self.sublayers]
         #kwargs["layers"]=self._layers
         return SimpleLayer.save(self,**kwargs)
-    def start(self,sess):
-        SimpleLayer.start(self,sess)
-        for layer in self.layers: layer.start(sess) 
-    def stop(self):
-        SimpleLayer.stop(self)
-        for layer in self.layers: layer.stop() 
-    def getWeights(self):
-        return SimpleLayer.getWeights(self)+[weight for layer in self.layers for weight in layer.getWeights()]
-    def getBiases(self):
-        return SimpleLayer.getBiases(self)+[bias for layer in self.layers for bias in layer.getBiases()]
-    def getDropout(self):
-        return SimpleLayer.getDropout(self)+[rate for layer in self.layers for rate in layer.getDropout()]
         #rates=Layer.getDropout(self)
         #for layer in self.layers: rates+=layer.getDropout()
         #return rates
@@ -364,8 +361,8 @@ class CombineLayer(Composite): #Combines layers in a parallel way
         CompositeLayer.__init__(self,**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
         for _layer in self._layers:
-            self.layers.append(Layer(x=self.y,**_layer))
-        self.combine=SimpleCombine([layer.get() for layer in self.layers],combine_op=self.combine_op)
+            self.add_sublayer(Layer(x=self.y,**_layer))
+        self.combine=SimpleCombine([sublayer.get() for sublayer in self.sublayers],combine_op=self.combine_op)
         self.y=self.combine.y
     def save(self,**kwargs):
         kwargs["combine_op"]=self.combine_op
@@ -377,8 +374,8 @@ class Network(Composite):
         layers=[]
         Composite.__init__(self,**kwargs)
         for _layer in self._layers:
-            self.layers.append(Layer(x=self.y,**_layer))
-            self.y=self.layers[-1].get()
+            self.add_sublayer(Layer(x=self.y,**_layer))
+            self.y=self.sublayers[-1].get()
     
 
 
@@ -389,7 +386,7 @@ class RandomCombineLayer(CombineLayer):
         layers=[{"Type":"Identity"},kwargs.update({"Type":"Random","shape":[-1 for i in range(x.get_shape().ndims-1)]+[channels]})]
         CombineLayer.__init__(self,layers=layers)
     def save(self,**kwargs):
-        kwargs=self.layers[1].save(kwargs)
+        kwargs=self.sublayers[1].save(kwargs)
         kwargs["type"]=self.type
         return kwargs
     

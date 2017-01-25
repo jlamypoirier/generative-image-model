@@ -109,10 +109,11 @@ class RandomLayer(BasicInputLayer):
 class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either x or the given file
     type="Constant"
     _noInputError="No initial value given to constant layer"
-    def __init__(self,folder="",file=None,convert_file=True,normalize=False,**kwargs):
+    def __init__(self,folder="",file=None,label_file=None,convert_file=True,normalize=False,**kwargs):
         SimpleLayer.__init__(self,**kwargs)
         self.folder=folder                   #(Optional) the folder for the file
         self.file=file                       #The file name, if loading form a file
+        self.label_file=label_file           #A file containing the labels
         self.convert_file=convert_file       #Convert the file to Tensorflow format for efficiency (memory, startup time)
         self.normalize=normalize
         self.file_data=None
@@ -132,6 +133,8 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.load_file()
             self.y=tf.Variable(self.file_data)
         self.file_data=None #Cleanup
+        if self.label_file:
+            self.labels=self.add_sublayer(ConstantLayer(x=None,folder=folder,file=label_file,convert_file=convert_file))
     def start(self,sess):
         SimpleLayer.start(self,sess)
         if self.convert_file:
@@ -151,9 +154,6 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         kwargs["convert_file"]=self.convert_file
         kwargs["normalize"]=self.normalize
         return SimpleLayer.save(self,**kwargs)
-        
-
-
 
 
 
@@ -169,18 +169,41 @@ class DataLayer(SimpleLayer):
         kwargs["batch"]=self.batch
         return Layer.save(self,**kwargs)
 
-
-class BatchLayer(DataLayer): #Broadcasts a tensor into a batch of identical tensors
-    type="Batch"
+class BatchIdentityLayer(DataLayer): #Broadcasts a tensor into a batch of identical tensors
+    type="Batch_Identity"
     def __init__(self,**kwargs):
         DataLayer.__init__(self,**kwargs)
         self.y=tf.tile(tf.expand_dims(self.y,axis=0), [self.batch]+[1]*self.y.get_shape().ndims)
+
+class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shuffling
+    type="Batch_Slice"
+    def __init__(self,**kwargs):
+        DataLayer.__init__(self,**kwargs)
+        self.data_n=tf.shape(self.y)[0]
+        self.y=tf.tile(self.y, [2]+[1]*(self.y.get_shape().ndims-1))#(safely) assumes self.batch < self.y.get_shape().values[0]
+        self.batch_n=tf.Variable(-1,dtype=tf.int32) #Will be 0 on first batch
+        self.batch_update=self.batch_n.assign_add(1)
+        self.ndims=self.y.get_shape().ndims-1  #Excludes batch dimension
+        self.begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n)]+[0]*self.ndims)
+        self.begin=tf.pack([tf.mod(self.batch_update*self.batch,self.data_n)]+[0]*self.ndims)
+        self.size=size=[self.batch]+[-1]*self.ndims
+        #The epoch of the last element of the last generated batch (starts at 0)
+        self.epoch=tf.div((self.batch_n+1)*self.batch-1,self.data_n)
+        self.last_y=tf.slice(self.y, begin=self.begin_no_update,size=self.size)
+        self.y=tf.slice(self.y, begin=self.begin,size=self.size)
+        labels=self.getInputLabels()
+        if labels!=None:
+            labels=tf.tile(labels,[2,1])
+            self.label_begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n),0])
+            self.label_begin=tf.pack([tf.mod(self.batch_update*self.batch,self.data_n),0])
+            self.label_size=size=[self.batch,-1]
+            self.labels=tf.slice(labels, begin=self.label_begin,size=self.label_size)
+            self.last_labels=tf.slice(labels, begin=self.label_begin_no_update,size=self.label_size)
         
         
         
         
-        
-        
+#Input processing
 class RandomCropLayer(SimpleLayer):
     type="Random_Crop"
     def __init__(self,shape=None,batch=False,**kwargs):
@@ -213,6 +236,7 @@ class MNISTLayer(DataLayer):
 class CIFARLayer(DataLayer):
     type="CIFAR_10"
     def __init__(self,folder='/tmp/cifar10_data',**kwargs):
+        DataLayer.__init__(self,**kwargs)
         self.folder=folder
         self.url='http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
         self.file_name = self.url.split('/')[-1]
@@ -220,12 +244,15 @@ class CIFARLayer(DataLayer):
         self.file_base_name=self.file_name.split(".")[0]
         self.file_base_path=os.path.join(self.folder,self.file_base_name)
         self.tf_file_path=self.file_base_path+".tf"
-        self.label_file_path=self.file_base_path+".labels.npy"
+        self.label_file_path=self.file_base_path+".labels"
         self.shape_file_path=self.file_base_path+".shape.npy"
-        if not (os.path.isfile(self.tf_file_path+".index") and os.path.isfile(self.label_file_path) and os.path.isfile(self.shape_file_path)):
+        if not (os.path.isfile(self.tf_file_path+".index") and 
+                os.path.isfile(self.label_file_path+".tf.index") and os.path.isfile(self.shape_file_path)):
             self.convert_data()
-        self.data=ConstantLayer(folder=self.folder,file=self.file_base_name,convert_file=True,normalize=True)
-        self.y=self.data.y
+        self.data=self.add_sublayer(ConstantLayer(
+                folder=self.folder,file=self.file_base_name,label_file=self.file_base_name+".labels",convert_file=True,normalize=True))
+        self.y=self.data.get()
+        self.labels=self.data.labels
     def save(self,**kwargs):
         kwargs["folder"]=self.folder
         return Layer.save(self,**kwargs)
@@ -261,9 +288,11 @@ class CIFARLayer(DataLayer):
         dics=[unpickle(os.path.join(folder,file)) for file in files]
         data=np.moveaxis(np.array([dic['data'] for dic in dics]).reshape([50000,3,32,32]),1,3).astype(np.float32)
         labels=np.array([dic['labels'] for dic in dics]).reshape([50000])
+        labels_one_hot=np.array([[label==i for i in range(10)] for label in labels],dtype=np.float32)
         saveTf(self.tf_file_path,data)
-        np.save(self.label_file_path,labels)
+        saveTf(self.label_file_path+".tf",labels_one_hot)
         np.save(self.shape_file_path,[50000,32,32,3])
+        np.save(self.label_file_path+".shape.npy",[50000,10])
         
         
         
