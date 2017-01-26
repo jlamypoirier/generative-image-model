@@ -43,6 +43,9 @@ class LayerFactory:
         return(LayerFactory.classes[type](*args,**kwargs))
 Layer=LayerFactory.build
 
+
+
+
 ###Basic layer
 class SimpleLayer:
     type="Identity"
@@ -51,31 +54,37 @@ class SimpleLayer:
     _copyManagerError="Copying variable requires a manager with an active session"
     _copySessionError="Copying variable requires both networks to have the same active session"
     _copyNetworkError="Copying variable requires identical networks"
-    def __init__(self,x=None,batch_norm=False,dropout=False,_cloned_layer=None,**kwargs):
+    def __init__(self,x=None,features=[],_cloned_layer=None,**kwargs):
         for kw in kwargs:
             warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
-        self.x=self._x
-        self.batch_norm=batch_norm           #Optional batch normalization on the input
-        self.dropout=dropout                 #Optional dropout on the input
-        self.y=self.x
-        self.sublayers=[]
+        self.x=self._x                       #The input, guaranteed to be a tensor-like or None
+        self.features=features               #A set of layers modifying the input. Can be any layer, but meant for feature layers
+        self.cloned=_cloned_layer            #The cloned layer, if applicable (should be set through the cloner function only)
+        self.y=self.x                        #The output of the layer
+        self.sublayers=[]                    #All the sublayers of the layer
+        self.feature_sublayers=[]            #The feature sublayers
+        if self.cloned!=None:
+            assert(self.type==_cloned_layer.type), self._clonedTypeError%(self.type,_cloned_layer.type)
         if isinstance(self.y,SimpleLayer):
             self.y=self.y.get()
             self._x=self._x.get()
-        if self.batch_norm:
-            mean,std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
-            self.y=(self.y-mean)/std
-        if self.dropout:
-            self.tf_keep_rate=tf.placeholder_with_default(np.float32(1.0),[])
-            self.y=tf.nn.dropout(self.y,self.tf_keep_rate)
-        if _cloned_layer!=None:              #Used by the clone function, not for direct use
-            assert(self.type==_cloned_layer.type), self._clonedTypeError%(self.type,_cloned_layer.type)
+        if self.cloned:
+            cloned_features=self.cloned.features
+            assert(len(self.features)<=len(cloned_features)) #Allow removing some features, but only the last ones
+        else:
+            cloned_features=[None]*len(self.features)
+        for i,feature in enumerate(self.features):#Features implemented in the order they are given
+            if type(feature)==dict:
+                layer=Layer(x=self.y,_cloned_layer=cloned_features[i],**feature)
+            else:
+                layer=Layer(x=self.y,type=feature,_cloned_layer=cloned_features[i])
+            self.add_sublayer(layer,_feature=True)
+            self.y=layer.get()
     def save(self,**kwargs):
         kwargs["type"]=self.type
-        kwargs["dropout"]=self.dropout
-        kwargs["batch_norm"]=self.batch_norm
+        if len(self.feature_sublayers)>0:kwargs["features"]=[feature.save() for feature in self.feature_sublayers]
         return kwargs
     def _getLabels(self): #Need label producing layers
         if "labels" in dir(self):
@@ -92,8 +101,10 @@ class SimpleLayer:
         if isinstance(self.x,SimpleLayer):
             return self.x.getLabels()
         return None
-    def add_sublayer(self,sublayer):
+    def add_sublayer(self,sublayer,_feature=False):
         self.sublayers.append(sublayer)
+        if _feature:
+            self.feature_sublayers.append(sublayer)
         return sublayer
     def get(self):
         return self.y
@@ -104,10 +115,7 @@ class SimpleLayer:
     def getBiases(self):
         return [bias for sublayer in self.sublayers for bias in sublayer.getBiases()]
     def getDropout(self):
-        keep_rate=[rate for sublayer in self.sublayers for rate in sublayer.getDropout()]
-        if self.dropout:
-            keep_rate+=[self.tf_keep_rate]
-        return keep_rate
+        return [rate for sublayer in self.sublayers for rate in sublayer.getDropout()]
     def getIn(self):
         return self.x
     def start(self,sess):
@@ -150,6 +158,38 @@ class SimpleLayer:
         if manager!=None:
             manager.add([new_layer])
             
+
+
+#Feature layers
+class DropoutLayer(SimpleLayer):
+    type="Dropout"
+    def __init__(self,default_rate=1.0,**kwargs):
+        SimpleLayer.__init__(self,**kwargs)
+        self.default_rate=default_rate
+        self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
+        self.y=tf.nn.dropout(self.y,self.tf_keep_rate)
+    def getDropout(self):
+        return [self.tf_keep_rate]
+    def save(self,**kwargs):
+        if self.default_rate!=1.0: kwargs["default_rate"]=self.default_rate
+        return SimpleLayer.save(self,**kwargs)
+
+class BatchNormLayer(SimpleLayer): #Batch normalization
+    type="Batch_Norm"
+    def __init__(self,**kwargs):
+        SimpleLayer.__init__(self,**kwargs)
+        self.mean,self.std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
+        self.y=(self.y-mean)/std
+
+
+class LocalResponseNormLayer(SimpleLayer): #Local response normalization
+    type="Local_Response_Norm"
+    def __init__(self,**kwargs):
+        SimpleLayer.__init__(self,**kwargs)
+        assert(self.y.get_shape().ndims==4), "Local response normalization requires a 4d tensor"
+        self.y=tf.nn.local_response_normalization(self.y)
+
+
 
 
 ###Linear and related layers
@@ -302,19 +342,21 @@ class Composite(SimpleLayer): #Common elements of composite layers (abstract cla
     def __init__(self,layers=[],**kwargs):
         SimpleLayer.__init__(self,**kwargs)
         self._layers=layers                  #Definition of the layers
-        if "_cloned_layer" in kwargs:
+        if "_cloned_layer" in kwargs and kwargs["_cloned_layer"]!=None:
             cloned=kwargs["_cloned_layer"].layers
             assert(len(_layers)==len(cloned)), self._clonedSublayerError%(len(_layers),len(cloned))
             for i,_layer in enumerate(_layers):
                 _layer["_cloned_layer"]=cloned[i]
         self.layers=[]
     def save(self,**kwargs):
-        kwargs["layers"]=[sublayer.save() for sublayer in self.sublayers]
-        #kwargs["layers"]=self._layers
+        kwargs["layers"]=[layer.save() for layer in self.layers]
         return SimpleLayer.save(self,**kwargs)
-        #rates=Layer.getDropout(self)
-        #for layer in self.layers: rates+=layer.getDropout()
-        #return rates
+    def add_sublayer(self,sublayer,_feature=False,_layer=False):
+        SimpleLayer.add_sublayer(self,sublayer,_feature)
+        if _layer:
+            self.layers.append(sublayer)
+        return sublayer
+    
 
 class SimpleCombine:#Auxiliary class to Combine
     _combineTypeError="Invlid combine type: %s"
@@ -360,23 +402,22 @@ class CombineLayer(Composite): #Combines layers in a parallel way
     def __init__(self,combine_op="combine",**kwargs):
         CompositeLayer.__init__(self,**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
-        for _layer in self._layers:
-            self.add_sublayer(Layer(x=self.y,**_layer))
-        self.combine=SimpleCombine([sublayer.get() for sublayer in self.sublayers],combine_op=self.combine_op)
+        for layer in self._layers:
+            self.add_sublayer(Layer(x=self.y,**layer),_layer=True)
+        self.combine=SimpleCombine([layer.get() for layer in self.layers],combine_op=self.combine_op)
         self.y=self.combine.y
     def save(self,**kwargs):
         kwargs["combine_op"]=self.combine_op
         return Composite.save(self,**kwargs)
 
-class Network(Composite):
+class Network(Composite):#Similar to SimpleLayer, but proper layers are distinguished from feature layers
     type="Network"
     def __init__(self,**kwargs):
         layers=[]
         Composite.__init__(self,**kwargs)
-        for _layer in self._layers:
-            self.add_sublayer(Layer(x=self.y,**_layer))
-            self.y=self.sublayers[-1].get()
-    
+        for layer in self._layers:
+            self.add_sublayer(Layer(x=self.y,**layer),_layer=True)
+            self.y=self.layers[-1].get()
 
 
 ###Complex Layers
@@ -386,7 +427,7 @@ class RandomCombineLayer(CombineLayer):
         layers=[{"Type":"Identity"},kwargs.update({"Type":"Random","shape":[-1 for i in range(x.get_shape().ndims-1)]+[channels]})]
         CombineLayer.__init__(self,layers=layers)
     def save(self,**kwargs):
-        kwargs=self.sublayers[1].save(kwargs)
+        kwargs=self.layers[1].save(kwargs)
         kwargs["type"]=self.type
         return kwargs
     
