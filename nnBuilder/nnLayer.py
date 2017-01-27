@@ -6,8 +6,23 @@ import warnings
 
 
 
+#####To do list:
 
+###Features:
+#Implement Testing Phase
+#Input preprocessing
+#Implement "Soft Dropout"
+#Reimplement DeepDream (update nnDreamer)
+#Reimplement GAN (update nnGenerator)
 
+##Fixes
+#Update nnUtils
+#Rework _LayerVars
+#Rework combine ops
+#Update and add complex layers
+#Finish CIFAR-10 example
+#Ignore useless parameters on saving
+#More tests
 
 
 class LayerFactory:
@@ -55,13 +70,14 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
         self.x=self._x                       #The input, converted to tensor-like (can be None)
-        self.y=self.x                       #The output of the layer during construction (actual output obtained through get)
+        self.y=self.x                        #The output of the layer during construction (final output obtained through get)
         if isinstance(self.y,_LayerRaw):
             self.y=self.y.get()
             self._x=self._x.get()
         self.finished=False
     def finish(self):
         if not self.finished:
+            assert("_y" not in dir(self))    #Debug
             self._y=self.y                   #The final output
             self.finished=True
             del self.y
@@ -78,7 +94,7 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         return kwargs
 
 
-class _LayerInstance(_LayerRaw):#Session management
+class _LayerInstance(_LayerRaw):#Session management (use as base class for saver and trainer?)
     type="Abstract"
     _sessionError="No active session"
     def __init__(self,**kwargs):
@@ -103,11 +119,11 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
         super().__init__(**kwargs)
         self.cloned=_cloned         #The copied layer, if variables are shared (should be set through the copy function only)
         if self.cloned!=None:
-            assert(self.type==self.cloned.type), self._clonedTypeError%(self.type,self.cloned.type)
+            assert(self.type==self.cloned["type"]), self._clonedTypeError%(self.type,self.cloned.type)
     def copy(self,                            #Makes a copy of the graph, with or without variable sharing
              x=None,                          #Feed a new input x or use the existing one (x=None)
              sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
-             share_vars=False                 #Enables variable sharing
+             share_vars=False,                #Enables variable sharing
              copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
              **kwargs                         #Override some other arguments (risky if copy_vars=True)
             ):
@@ -139,7 +155,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
     SUBLAYER_INPUT=dict(kw="in_features",lst="sublayers_in",set_y=True)
     SUBLAYER_OUTPUT=dict(kw="out_features",lst="sublayers_out",set_y=True)
     SUBLAYER_PROPER=dict(kw="layers",lst="sublayers_proper",set_y=True)
-    sublayer_types=[_LayerTree.SUBLAYER_INPUT,_LayerTree.SUBLAYER_OUTPUT,_LayerTree.SUBLAYER_PROPER]
+    sublayer_types=[SUBLAYER_INPUT,SUBLAYER_OUTPUT,SUBLAYER_PROPER]
     def __init__(self,in_features=None,out_features=None,layers=None,**kwargs):
         super().__init__(**kwargs)
         self.in_features=in_features or []       #A set of layers modifying the input. Can be any layer, but meant for feature layers
@@ -148,11 +164,13 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         self.sublayers=[]                        #All the sublayers of the layer
         for type in self.sublayer_types:         #The sublayers sorted by type
             setattr(self,type["lst"],[])
+        self.make_sublayers(**self.SUBLAYER_INPUT)
+        self.make_sublayers(**self.SUBLAYER_PROPER)
     def save(self,**kwargs):
         for type in self.sublayer_types:
             sublayers=getattr(self,type["lst"])
             if len(sublayers)>0:
-            kwargs[type["kw"]]=[layer.save() for layer in sublayers]
+                kwargs[type["kw"]]=[layer.save() for layer in sublayers]
         return super().save(**kwargs)
     def make_sublayers(self,kw,lst,set_y,**kwargs):
         desc=getattr(self,kw)
@@ -160,17 +178,19 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
             cloned=getattr(self.cloned,getattr(self,lst))
             assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
         else:
-            cloned=[{} for i in len(desc)]
+            cloned=[None for _ in desc]
         for i,_desc in enumerate(desc):#Features implemented in the order they are given
             if type(_desc)==dict:
-                layer=Layer(x=self.y,_cloned_layer=cloned[i],**_desc)
+                layer=Layer(x=self.y,_cloned=cloned[i],**_desc)
             else:
-                layer=Layer(x=self.y,_cloned_layer=cloned[i],type=_desc)
-            self.add_sublayer(layer,kw)
+                layer=Layer(x=self.y,_cloned=cloned[i],type=_desc)
+            self.add_sublayer(layer,kw=kw,lst=lst)
             if set_y:
                 self.set(layer.get())
-    def add_sublayer(self,layer,**kwargs):
+    def add_sublayer(self,layer,finish=True,**kwargs):
         self.sublayers.append(layer)
+        if finish:
+            layer.finish()
         if "lst" in kwargs and kwargs["lst"] in dir(self):
             getattr(self,kwargs["lst"]).append(layer)
         return layer
@@ -178,13 +198,14 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         for sublayer in self.sublayers: sublayer.start(sess) 
         super().start(sess)
     def stop(self):
-        super.stop()
+        super().stop()
         for sublayer in self.sublayers: sublayer.stop() 
     def finish(self):
         if not self.finished:
+            self.make_sublayers(**self.SUBLAYER_OUTPUT)
             for sublayer in self.sublayers:
                 sublayer.finish()
-            super.finish()
+            super().finish()
             
             
             
@@ -193,17 +214,21 @@ class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some
     def __init__(self,**kwargs):#Needs reviewing
         super().__init__(**kwargs)
     def get_weights(self):
-        return self.sub_gather_fun("get_weights")
+        return self.simple_gather_fun("get_weights")
     def get_biases(self):
-        return self.sub_gather_fun("get_biases")
+        return self.simple_gather_fun("get_biases")
     def get_dropout(self):
-        return self.sub_gather_fun("get_dropout")
+        return self.simple_gather_fun("get_dropout")
     def get_vars(self):
         return self.get_weights()+self.get_biases()
+    def simple_gather_fun(self,fun,**kwargs):#Abstract function for iterating across all sublayers
+        return [param for sublayer in self.sublayers for param in sublayer.gather_self(fun,**kwargs)]
     def sub_gather_fun(self,fun,**kwargs):#Abstract function for iterating across all sublayers
         return [param for sublayer in self.sublayers for param in sublayer.gather_fun(fun,**kwargs)]
     def gather_fun(self,fun,**kwargs):#Also include the current layer
-        return (fun in dir(self) and [getattr(self,fun)(**kwargs)] or [])+self.sub_gather_fun(fun,**kwargs)
+        return self.gather_self(fun,**kwargs)+self.sub_gather_fun(fun,**kwargs)
+    def gather_self(self,fun,**kwargs):#Only the current layer
+        return (fun in dir(self) and getattr(self,fun)(**kwargs) or [])
     def _get_labels(self):
         if "labels" in dir(self):
             if isinstance(self.labels,SimpleLayer):
@@ -221,7 +246,7 @@ class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some
         return labels 
 
 ###Basic layer
-class SimpleLayer:
+class SimpleLayer(_LayerVars):
     type="Network"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -269,12 +294,12 @@ class SimpleCombine:#Auxiliary class to Combine (needs reworking)
 class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff handled by _LayerTree class)
     type="Combine"
     SUBLAYER_COMBINE=dict(kw="combined_layers",lst="sublayers_combined",set_y=False)
-    sublayer_types=super().sublayer_types+[_LayerTree.SUBLAYER_COMBINE]
+    sublayer_types=_LayerTree.sublayer_types+[SUBLAYER_COMBINE]
     def __init__(self,combine_op="combine",combined_layers=[],**kwargs):
         super().__init__(**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
         self.layers=layers                   #The combined layers
-        self.make_sublayers(self,**self.SUBLAYER_COMBINE)
+        self.make_sublayers(**self.SUBLAYER_COMBINE)
         self.combine=SimpleCombine([layer.get() for layer in self.sublayers_combined],combine_op=self.combine_op)
         self.y=self.combine.y
     def save(self,**kwargs):
@@ -294,7 +319,7 @@ class DropoutLayer(SimpleLayer):
         return super().get_dropout()+[self.tf_keep_rate]
     def save(self,**kwargs):
         if self.default_rate!=1.0: kwargs["default_rate"]=self.default_rate
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
 
 class BatchNormLayer(SimpleLayer): #Batch normalization
     type="Batch_Norm"
@@ -325,9 +350,9 @@ class LinearLayer(SimpleLayer):
         if len(shape)>1:
             self.y=tf.reshape(self.y,[-1,shape.num_elements()])
         self.shape=[shape.num_elements(),size]
-        if "_cloned_layer" in kwargs:
-            self.w=kwargs["_cloned_layer"].w
-            self.b=kwargs["_cloned_layer"].b
+        if self.cloned!=None:
+            self.w=self.cloned.w
+            self.b=self.cloned.b
         else:
             self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
@@ -354,7 +379,7 @@ class ReluLayer(LinearLayer):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.relu=self.add_sublayer(SimpleRelu(x=self.y))
-        self.y=self.relu.y
+        self.y=self.relu.get()
         
 class SimpleSoftmax(SimpleLayer):
     type="Simple_Softmax"
@@ -367,7 +392,7 @@ class SoftmaxLayer(LinearLayer):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.softmax=self.add_sublayer(SimpleSoftmax(x=self.y))
-        self.y=self.softmax.y
+        self.y=self.softmax.get()
         
 class SimpleSigmoid(SimpleLayer):
     type="Simple_Sigmoid"
@@ -380,7 +405,7 @@ class SigmoidLayer(LinearLayer):
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.sigmoid=self.add_sublayer(SimpleSigmoid(x=self.y))
-        self.y=self.sigmoid.y
+        self.y=self.sigmoid.get()
         
 class QuadLayer(LinearLayer):
     type="Quadratic"
@@ -412,9 +437,9 @@ class ConvLayer(WindowLayer):
         self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
         self.input_channels=self._input_channels or self.y.get_shape()[3].value
         self.filter_shape=[self.window,self.window,self.input_channels,self.size]
-        if "_cloned_layer" in kwargs:
-            self.w=kwargs["_cloned_layer"].w
-            self.b=kwargs["_cloned_layer"].b
+        if self.cloned!=None:
+            self.w=self.cloned.w
+            self.b=self.cloned.b
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')

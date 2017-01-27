@@ -86,7 +86,7 @@ class Optimizer(Trainer):
         self.network=network         #The trained network
         self.dropout=dropout         #Enables dropout (requires layers with dropout)
         self.regularize=regularize   #Enable or disable l2 regularization
-        self._loss=loss              #The loss tensor
+        self._loss=loss              #The loss tensor, before regularization
         self.loss=loss
         if optimizer=="sgd":
             self.optimizer=_Optimizer_SGD()
@@ -115,9 +115,9 @@ class Optimizer(Trainer):
             self.network=network
         if self.network==None: 
             raise Exception(self._noNetworkError)
-        self.vars=self.network.getVars()
+        self.vars=self.network.get_vars()
         if self.dropout:
-            self.keep_rates=self.network.getDropout()
+            self.keep_rates=self.network.get_dropout()
             self.params.update({rate:1. for rate in self.keep_rates})
             self.param_dic.update({"keep_rate":self.keep_rates,"keep rate":self.keep_rates})
             self.param_dic.update({"keep_rate%i":rate for i, rate in enumerate(self.keep_rates)})
@@ -152,13 +152,17 @@ class ClassifierTrainer(Optimizer):
         if labels!=None:
             self.labels=labels
         if self.labels==None:
-            self.labels=self.network.getInputLabels()
+            self.labels=self.network.get_input_labels()
         if self.labels==None: 
             raise Exception(self._noLabelsError)
+        if isinstance(self.labels,SimpleLayer):
+            self.labels=self.labels.get()
         if logits!=None:
             self.logits=logits
         if self.logits==None:
             self.logits=self.network.get()
+        if isinstance(self.logits,SimpleLayer):
+            self.logits=self.logits.get()
         if self.array: #Fixes the dimension of the logits when the classifier results in an array (Equiv to avg pooling layer)
             array_dim= self.logits.get_shape().ndims-2  #logits is 2d tensor
             if array_dim>0:
