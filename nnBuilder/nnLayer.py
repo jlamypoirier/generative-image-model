@@ -48,39 +48,40 @@ Layer=LayerFactory.build
 class _LayerRaw:#Most basic layer, has a type, an input and an output
     type="Abstract"
     _uncaughtArgumentWarning="Unknown argument: %s"
-    _finishedError="Trying to set "
+    _finishedError="Trying to set the output of a finished layer"
     def __init__(self,x=None,**kwargs):
         for kw in kwargs:
             warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
         self.x=self._x                       #The input, converted to tensor-like (can be None)
-        self._y=self.x                       #The output of the layer during construction (actual output obtained through get)
-        if isinstance(self._y,_LayerRaw):
-            self._y=self._y.get()
+        self.y=self.x                       #The output of the layer during construction (actual output obtained through get)
+        if isinstance(self.y,_LayerRaw):
+            self.y=self.y.get()
             self._x=self._x.get()
         self.finished=False
     def finish(self):
         if not self.finished:
-            self.y=self._y                   #The final output
+            self._y=self.y                   #The final output
             self.finished=True
-    def getIn(self):
+            del self.y
+    def get_in(self):
         return self.x
     def get(self):                           #Garanteed to be the final output
         self.finish()
-        return self.y
-    def set(self,y):                         #Properly updates the output
+        return self._y
+    def set(self,y):                         #Updates the output
         assert(not self.finished), self._finishedError
-        self._y=y
+        self.y=y
     def save(self,**kwargs):
         kwargs["type"]=self.type
         return kwargs
 
 
-class _LayerInstance(_LayerRaw):#Implement session management
+class _LayerInstance(_LayerRaw):#Session management
     type="Abstract"
     _sessionError="No active session"
-    def __init__(self,x=None,**kwargs):
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.sess=None
     def start(self,sess):
@@ -92,402 +93,142 @@ class _LayerInstance(_LayerRaw):#Implement session management
         assert(self.sess!=None),self._sessionError
         return self.sess.run(self.y)
     
-class _LayerCopy(_LayerRaw):#Implement copying and cloning
+class _LayerCopy(_LayerInstance):#Copying and cloning
     type="Abstract"
-    _clonedTypeError='Trying to clone layers of different type: "%s" vs "%s"'
+    _copyTypeError='Trying to share variables between layers of different type: "%s" vs "%s"'
     _copyManagerError="Copying variable requires a manager with an active session"
     _copySessionError="Copying variable requires both networks to have the same active session"
     _copyNetworkError="Copying variable requires identical networks"
-    def __init__(self,x=None,_cloned=None,**kwargs):
+    def __init__(self,_cloned=None,**kwargs):
         super().__init__(**kwargs)
-        self.cloned=_cloned         #The cloned layer, if applicable (should be set through the cloner function only)
+        self.cloned=_cloned         #The copied layer, if variables are shared (should be set through the copy function only)
         if self.cloned!=None:
             assert(self.type==self.cloned.type), self._clonedTypeError%(self.type,self.cloned.type)
-    def copy(self,                            #Makes a copy of the graph, with a new variable set
+    def copy(self,                            #Makes a copy of the graph, with or without variable sharing
              x=None,                          #Feed a new input x or use the existing one (x=None)
              sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
+             share_vars=False                 #Enables variable sharing
              copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
              **kwargs                         #Override some other arguments (risky if copy_vars=True)
             ):
-        if i==None:
+        if x==None:
             x=self.x
-        layer=LayerFactory(x=x,**self.save().update(kwargs))
+        cloned=share_vars and self or None
+        layer=LayerFactory(x=x,**self.save().update(kwargs),_cloned=cloned)
         if sess!=None:
-            sess.add([new_layer])
+            sess.add([layer])
         elif self.sess!=None:
-            self.sess.add([new_layer])
-        if copy_vars:
-            assert(manager!=None and layer.sess.running), self._copyManagerError
-            self.copy_vars_to(layer)
-        
-
-
-
-
-
-
-
-
-
-###Basic layer
-class SimpleLayer:
-    type="Identity"
-    _uncaughtArgumentWarning="Unknown argument: %s"
-    _clonedTypeError='Trying to clone layers of different type: "%s" vs "%s"'
-    _copyManagerError="Copying variable requires a manager with an active session"
-    _copySessionError="Copying variable requires both networks to have the same active session"
-    _copyNetworkError="Copying variable requires identical networks"
-    def __init__(self,x=None,features=[],_cloned_layer=None,**kwargs):
-        for kw in kwargs:
-            warnings.warn(self._uncaughtArgumentWarning%kw)
-        self.type=self.__class__.type        #The type of the layer (user-friendly class name)
-        self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
-        self.x=self._x                       #The input, converted to tensor-like (can be None)
-        self.in_features=.in_features        #A set of layers modifying the input. Can be any layer, but meant for feature layers
-        self.out_features=.out_features      #A set of layers modifying the output.
-        self.cloned=_cloned_layer            #The cloned layer, if applicable (should be set through the cloner function only)
-        self._y=self.x                       #The output of the layer during construction (actual output obtained through get)
-        self.sublayers=[]                    #All the sublayers of the layer
-        self.feature_sublayers_in=[]            #The feature sublayers
-        self.feature_sublayers_out=[]            #The feature sublayers
-        if self.cloned!=None:
-            assert(self.type==_cloned_layer.type), self._clonedTypeError%(self.type,_cloned_layer.type)
-        if isinstance(self._y,SimpleLayer):
-            self._y=self._y.get()
-            self._x=self._x.get()
-    def save(self,**kwargs):
-        kwargs["type"]=self.type
-        if len(self.feature_sublayers_in)>0:kwargs["in_features"]=[feature.save() for feature in self.feature_sublayers_in]
-        if len(self.feature_sublayers_out)>0:kwargs["out_features"]=[feature.save() for feature in self.feature_sublayers_out]
-        return kwargs
-    def _getLabels(self): #Need label producing layers
-        if "labels" in dir(self):
-            if isinstance(self.labels,SimpleLayer):
-                return self.labels.get()
-            return self.labels
-        return None
-    def getLabels(self):
-        labels=self._getLabels()
-        if labels==None:
-            return self.getInputLabels()
-        return labels 
-    def getInputLabels(self):
-        if isinstance(self.x,SimpleLayer):
-            return self.x.getLabels()
-        return None
-    def add_sublayer(self,sublayer,_feature_in=False,_feature_out=False):
-        self.sublayers.append(sublayer)
-        if _feature_in:
-            self.feature_sublayers_in.append(sublayer)
-        if _feature_out:
-            self.feature_sublayers_out.append(sublayer)
-        return sublayer
-    def get(self):
-        return self.y
-    def getVars(self):
-        return self.getWeights()+self.getBiases()
-    def getWeights(self):
-        return [weight for sublayer in self.sublayers for weight in sublayer.getWeights()]
-    def getBiases(self):
-        return [bias for sublayer in self.sublayers for bias in sublayer.getBiases()]
-    def getDropout(self):
-        return [rate for sublayer in self.sublayers for rate in sublayer.getDropout()]
-    def getIn(self):
-        return self.x
-    def start(self,sess):
-        self.sess=sess
-        for sublayer in self.sublayers: sublayer.start(sess) 
-    def stop(self):
-        self.sess=None
-        for sublayer in self.sublayers: sublayer.stop() 
-    def run(self):
-        assert(self.sess!=None),"No active session"
-        return self.sess.run(self.y)
-    def copy(self,                            #Makes a copy of the graph, with a new variable set
-             x=None,                          #Feed a new input x or use the existing one (x=None)
-             manager=None,                     #Specify a session manager for the new layer (Optional)
-             copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
-             **kwargs                         #Override some other arguments (risky if copy_vars=True)
-            ):    
-        new_layer=LayerFactory(x=x or self.x,**self.save().update(kwargs))
-        if manager!=None:
-            manager.add([new_layer])
-        if copy_vars:
-            assert(manager!=None and manager.running), self._copyManagerError
+            self.sess.add([layer])
+        if copy_vars and not share_vars:
+            assert(layer.sess!=None and layer.sess.running), self._copyManagerError
             self.copy_vars_to(layer)
     def copy_vars_to(self,layer):#Copies the variables to another layer. The two layers must be identical
         assert(self.sess!=None and self.sess==layer.sess), self._copySessionError
         self.sess.run(self.copy_vars_op(layer))
     def copy_vars_op(self,layer):#Generates the copying operation but doesn't run it
-        old_vars=self.getVars()
-        new_vars=new_layer.getVars(),
+        old_vars=self.getVars()  #Implemented in _LayerVars
+        new_vars=layer.getVars(),
         assert(len(old_vars)==len(new_vars)),self._copyNetworkError
         for i in len(old_vars): #Check if the variables are compatible
             assert(old_vars[i].get_shape().as_list()==new_vars[i].get_shape().as_list()), self._copyNetworkError
         return [new_var.assign(old_vars[i]) for i,new_var in enumerate(new_vars)]
-    def clone(self,                           #Makes a copy of the graph, with a new variable set
-             x=None,                          #Feed a new input x or use the existing one (x=None)
-             manager=None,                    #Specify a session manager for the new layer (Optional)
-             **kwargs                         #Override some other arguments (risky)
-            ):    
-        new_layer=LayerFactory(x=x or self.x,_cloned_layer=self,**self.save().update(kwargs))
-        if manager!=None:
-            manager.add([new_layer])
-    def make_features_in(self):
+
+    
+class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer types in derived classes
+    type="Abstract"
+    SUBLAYER_INPUT=dict(kw="in_features",lst="sublayers_in",set_y=True)
+    SUBLAYER_OUTPUT=dict(kw="out_features",lst="sublayers_out",set_y=True)
+    SUBLAYER_PROPER=dict(kw="layers",lst="sublayers_proper",set_y=True)
+    sublayer_types=[_LayerTree.SUBLAYER_INPUT,_LayerTree.SUBLAYER_OUTPUT,_LayerTree.SUBLAYER_PROPER]
+    def __init__(self,in_features=None,out_features=None,layers=None,**kwargs):
+        super().__init__(**kwargs)
+        self.in_features=in_features or []       #A set of layers modifying the input. Can be any layer, but meant for feature layers
+        self.out_features=out_features or []     #A set of layers modifying the output.
+        self.layers=layers or []                 #The layers of the network, if applicable (same as input features)
+        self.sublayers=[]                        #All the sublayers of the layer
+        for type in self.sublayer_types:         #The sublayers sorted by type
+            setattr(self,type["lst"],[])
+    def save(self,**kwargs):
+        for type in self.sublayer_types:
+            sublayers=getattr(self,type["lst"])
+            if len(sublayers)>0:
+            kwargs[type["kw"]]=[layer.save() for layer in sublayers]
+        return super().save(**kwargs)
+    def make_sublayers(self,kw,lst,set_y,**kwargs):
+        desc=getattr(self,kw)
         if self.cloned:
-            cloned_features=[feature.save() for feature in self.cloned.feature_sublayers_in]
-            assert(len(self.features_in)<=len(cloned_features)) #Allow removing some features, but only the last ones
-        else:
-            cloned_features=[{}]*len(self.features)
-        for i,feature in enumerate(self.features_in):#Features implemented in the order they are given
-            if type(feature)==dict:
-                layer=Layer(x=self._y,_cloned_layer=cloned_features[i],**feature)
-            else:
-                layer=Layer(x=self._y,type=feature,_cloned_layer=cloned_features[i])
-            self.add_sublayer(layer,_feature_in=True)
-            self._y=layer.get()
-    def make_features_out(self):
-        if self.cloned:
-            cloned_features=[feature.save() for feature in self.cloned.feature_sublayers_out]
-            assert(len(self.features_out)<=len(cloned_features)) #Allow removing some features, but only the last ones
-        else:
-            cloned_features=[{}]*len(self.features)
-        for i,feature in enumerate(self.features_in):#Features implemented in the order they are given
-            if type(feature)==dict:
-                layer=Layer(x=self._y,_cloned_layer=cloned_features[i],**feature)
-            else:
-                layer=Layer(x=self._y,type=feature,_cloned_layer=cloned_features[i])
-            self.add_sublayer(layer,_feature_in=True)
-            self._y=layer.get()
-    def make_sublayers(self,type,update_y=True,**kwargs):
-        if type=="in":
-            desc=self.features_in
-            clone_source="feature_sublayers_in"
-            sub_arg=dict(_feature_in=True)
-        elif type=="out":
-            desc=self.features_out
-            clone_source="feature_sublayers_out"
-            sub_arg=dict(_feature_out=True)
-        elif type="custom": #For use by derived classes
-            assert(all(key in kwargs for key in ["desc","clone_source","sub_arg"]))
-        else:
-            raise Exception("Unknown sublayer type")
-            
-        if self.cloned:
-            cloned=getattr(self.cloned,clone_source)
+            cloned=getattr(self.cloned,getattr(self,lst))
             assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
         else:
-            cloned=[{}]*len(desc)
+            cloned=[{} for i in len(desc)]
         for i,_desc in enumerate(desc):#Features implemented in the order they are given
             if type(_desc)==dict:
-                layer=Layer(x=self._y,_cloned_layer=cloned[i],**_desc)
+                layer=Layer(x=self.y,_cloned_layer=cloned[i],**_desc)
             else:
-                layer=Layer(x=self._y,_cloned_layer=cloned[i],type=_desc)
-            self.add_sublayer(layer,**sub_arg)
-            if update_y:
-                self._y=layer.get()
+                layer=Layer(x=self.y,_cloned_layer=cloned[i],type=_desc)
+            self.add_sublayer(layer,kw)
+            if set_y:
+                self.set(layer.get())
+    def add_sublayer(self,layer,**kwargs):
+        self.sublayers.append(layer)
+        if "lst" in kwargs and kwargs["lst"] in dir(self):
+            getattr(self,kwargs["lst"]).append(layer)
+        return layer
+    def start(self,sess):#Risky if the starting order matters?
+        for sublayer in self.sublayers: sublayer.start(sess) 
+        super().start(sess)
+    def stop(self):
+        super.stop()
+        for sublayer in self.sublayers: sublayer.stop() 
+    def finish(self):
+        if not self.finished:
+            for sublayer in self.sublayers:
+                sublayer.finish()
+            super.finish()
+            
+            
             
 
+class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some other parameters
+    def __init__(self,**kwargs):#Needs reviewing
+        super().__init__(**kwargs)
+    def get_weights(self):
+        return self.sub_gather_fun("get_weights")
+    def get_biases(self):
+        return self.sub_gather_fun("get_biases")
+    def get_dropout(self):
+        return self.sub_gather_fun("get_dropout")
+    def get_vars(self):
+        return self.get_weights()+self.get_biases()
+    def sub_gather_fun(self,fun,**kwargs):#Abstract function for iterating across all sublayers
+        return [param for sublayer in self.sublayers for param in sublayer.gather_fun(fun,**kwargs)]
+    def gather_fun(self,fun,**kwargs):#Also include the current layer
+        return (fun in dir(self) and [getattr(self,fun)(**kwargs)] or [])+self.sub_gather_fun(fun,**kwargs)
+    def _get_labels(self):
+        if "labels" in dir(self):
+            if isinstance(self.labels,SimpleLayer):
+                return self.labels.get()
+            return self.labels
+        return None
+    def get_input_labels(self,recurse=True):
+        if isinstance(self.x,SimpleLayer):
+            return self.x.get_labels(recurse=recurse)
+        return None
+    def get_labels(self,recurse=True):
+        labels=self._get_labels()
+        if labels==None and recurse:
+            return self.get_input_labels()
+        return labels 
 
-#Feature layers
-class DropoutLayer(SimpleLayer):
-    type="Dropout"
-    def __init__(self,default_rate=1.0,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.default_rate=default_rate
-        self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
-        self.y=tf.nn.dropout(self.y,self.tf_keep_rate)
-    def getDropout(self):
-        return [self.tf_keep_rate]
-    def save(self,**kwargs):
-        if self.default_rate!=1.0: kwargs["default_rate"]=self.default_rate
-        return SimpleLayer.save(self,**kwargs)
-
-class BatchNormLayer(SimpleLayer): #Batch normalization
-    type="Batch_Norm"
+###Basic layer
+class SimpleLayer:
+    type="Network"
     def __init__(self,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.mean,self.std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
-        self.y=(self.y-mean)/std
+        super().__init__(**kwargs)
 
 
-class LocalResponseNormLayer(SimpleLayer): #Local response normalization
-    type="Local_Response_Norm"
-    def __init__(self,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        assert(self.y.get_shape().ndims==4), "Local response normalization requires a 4d tensor"
-        self.y=tf.nn.local_response_normalization(self.y)
-
-
-
-
-###Linear and related layers
-class LinearLayer(SimpleLayer):
-    type="Linear"
-    def __init__(self,size=1,rand_scale=0.1,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.size=size                       #Number of output channels
-        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
-        shape=self.y.get_shape()[1:]
-        if len(shape)>1:
-            self.y=tf.reshape(self.y,[-1,shape.num_elements()])
-        self.shape=[shape.num_elements(),size]
-        if "_cloned_layer" in kwargs:
-            self.w=kwargs["_cloned_layer"].w
-            self.b=kwargs["_cloned_layer"].b
-        else:
-            self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
-        self.y=tf.matmul(self.y,self.w)+self.b
-    def save(self,**kwargs):
-        kwargs["size"]=self.size
-        kwargs["rand_scale"]=self.rand_scale
-        return SimpleLayer.save(self,**kwargs)
-    def getWeights(self):
-        return [self.w]
-    def getBiases(self):
-        return [self.b]
-            
-
-class SimpleRelu(SimpleLayer):
-    type="Simple_Relu"
-    def __init__(self,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.y=tf.nn.relu(self.y)
-        
-
-class ReluLayer(LinearLayer):
-    type="Relu"
-    def __init__(self,**kwargs):
-        LinearLayer.__init__(self,**kwargs)
-        self.relu=self.add_sublayer(SimpleRelu(x=self.y))
-        self.y=self.relu.y
-        
-class SimpleSoftmax(SimpleLayer):
-    type="Simple_Softmax"
-    def __init__(self,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.y=tf.nn.softmax(self.y)
-        
-class SoftmaxLayer(LinearLayer):
-    type="Softmax"
-    def __init__(self,**kwargs):
-        LinearLayer.__init__(self,**kwargs)
-        self.softmax=self.add_sublayer(SimpleSoftmax(x=self.y))
-        self.y=self.softmax.y
-        
-class SimpleSigmoid(SimpleLayer):
-    type="Simple_Sigmoid"
-    def __init__(self,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.y=tf.nn.sigmoid(self.y)
-        
-class SigmoidLayer(LinearLayer):
-    type="Sigmoid"
-    def __init__(self,**kwargs):
-        LinearLayer.__init__(self,**kwargs)
-        self.sigmoid=self.add_sublayer(SimpleSigmoid(x=self.y))
-        self.y=self.sigmoid.y
-        
-class QuadLayer(LinearLayer):
-    type="Quadratic"
-    def __init__(self,**kwargs):
-        LinearLayer.__init__(self,**kwargs)
-        self.y=tf.mul(self.y,self.y)
-
-###Convolution and pooling
-class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abstract class)
-    type="Abstract"
-    def __init__(self,pad="VALID",window=3,stride=1,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self.pad=pad                         #Type of padding used
-        self.window=window                   #Size of the input window
-        self.stride=stride                   #Stride distance of the input window
-    def save(self,**kwargs):
-        kwargs["pad"]=self.pad
-        kwargs["window"]=self.window
-        kwargs["stride"]=self.stride
-        return SimpleLayer.save(self,**kwargs)
-        
-class ConvLayer(WindowLayer):
-    type="Convolution"
-    def __init__(self,size=1,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
-        WindowLayer.__init__(self,**kwargs)
-        self.size=size                       #Number of output channels
-        self.relu=relu                       #Optional relu on the output
-        self._input_channels=input_channels  #(Optional) overrides the number of input channels, needed for variable size input
-        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
-        self.input_channels=self._input_channels or self.y.get_shape()[3].value
-        #if self.input_channels==None:
-        #    self.input_channels=self.y.get_shape()[3].value
-        self.filter_shape=[self.window,self.window,self.input_channels,self.size]
-        if "_cloned_layer" in kwargs:
-            self.w=kwargs["_cloned_layer"].w
-            self.b=kwargs["_cloned_layer"].b
-        else:
-            self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-        self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b)
-        if self.relu:
-            self.y=tf.nn.relu(self.y)
-    def getWeights(self):
-        return [self.w]
-    def getBiases(self):
-        return [self.b]
-    def save(self,**kwargs):
-        kwargs["size"]=self.size
-        kwargs["relu"]=self.relu
-        kwargs["input_channels"]=self._input_channels
-        kwargs["rand_scale"]=self.rand_scale
-        return WindowLayer.save(self,**kwargs)
-    
-class PoolLayer(WindowLayer):
-    type="Pool"
-    _poolTypeError="Invlid pooling type: %s"
-    def __init__(self,pool_type="max",stride=2,**kwargs):
-        WindowLayer.__init__(self,stride=stride,**kwargs)
-        self.pool_type=pool_type             #avg or max pooling 
-        self.ksize=[1, self.window, self.window, 1]
-        self.strides=[1, self.stride, self.stride, 1]
-        if self.pool_type=="max":
-            self.y=tf.nn.max_pool(self.y, ksize=self.ksize, 
-                      strides=self.strides,padding=self.pad)
-        elif self.pool_type=="avg":
-            self.y=tf.nn.avg_pool(self.y, ksize=self.ksize, 
-                      strides=self.strides,padding=self.pad)
-        else: 
-            raise Exception(self._poolTypeError%self.pool_type)
-    def save(self,**kwargs):
-        kwargs["pool_type"]=self.pool_type
-        return WindowLayer.save(self,**kwargs)
-
-
-    
-
-###Layer combining and composition
-class Composite(SimpleLayer): #Common elements of composite layers (abstract class)
-    type="Abstract"
-    _clonedSublayerError="Trying to clone networks with a different number of sublayers: %s vs %s"
-    def __init__(self,layers=[],**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
-        self._layers=layers                  #Definition of the layers
-        if "_cloned_layer" in kwargs and kwargs["_cloned_layer"]!=None:
-            cloned=kwargs["_cloned_layer"].layers
-            assert(len(_layers)==len(cloned)), self._clonedSublayerError%(len(_layers),len(cloned))
-            for i,_layer in enumerate(_layers):
-                _layer["_cloned_layer"]=cloned[i]
-        self.layers=[]
-    def save(self,**kwargs):
-        kwargs["layers"]=[layer.save() for layer in self.layers]
-        return SimpleLayer.save(self,**kwargs)
-    def add_sublayer(self,sublayer,_feature=False,_layer=False):
-        SimpleLayer.add_sublayer(self,sublayer,_feature)
-        if _layer:
-            self.layers.append(sublayer)
-        return sublayer
-    
-
-class SimpleCombine:#Auxiliary class to Combine
+###Layer combining
+class SimpleCombine:#Auxiliary class to Combine (needs reworking)
     _combineTypeError="Invlid combine type: %s"
     _combineLengthError="Combine operation %s takes exactly 2 arguments (%s given)"
     _combineShapeError="Shapes %s and %s are incompatible for the combine operation %s"
@@ -525,42 +266,213 @@ class SimpleCombine:#Auxiliary class to Combine
                     return False
         return True
         
-            
-class CombineLayer(Composite): #Combines layers in a parallel way
+class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff handled by _LayerTree class)
     type="Combine"
-    def __init__(self,combine_op="combine",**kwargs):
-        CompositeLayer.__init__(self,**kwargs)
+    SUBLAYER_COMBINE=dict(kw="combined_layers",lst="sublayers_combined",set_y=False)
+    sublayer_types=super().sublayer_types+[_LayerTree.SUBLAYER_COMBINE]
+    def __init__(self,combine_op="combine",combined_layers=[],**kwargs):
+        super().__init__(**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
-        for layer in self._layers:
-            self.add_sublayer(Layer(x=self.y,**layer),_layer=True)
-        self.combine=SimpleCombine([layer.get() for layer in self.layers],combine_op=self.combine_op)
+        self.layers=layers                   #The combined layers
+        self.make_sublayers(self,**self.SUBLAYER_COMBINE)
+        self.combine=SimpleCombine([layer.get() for layer in self.sublayers_combined],combine_op=self.combine_op)
         self.y=self.combine.y
     def save(self,**kwargs):
         kwargs["combine_op"]=self.combine_op
-        return Composite.save(self,**kwargs)
+        return super().save(**kwargs)
 
-class Network(Composite):#Similar to SimpleLayer, but proper layers are distinguished from feature layers
-    type="Network"
+
+#Feature layers
+class DropoutLayer(SimpleLayer):
+    type="Dropout"
+    def __init__(self,default_rate=1.0,**kwargs):
+        super().__init__(**kwargs)
+        self.default_rate=default_rate
+        self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
+        self.y=tf.nn.dropout(self.y,self.tf_keep_rate)
+    def get_dropout(self):
+        return super().get_dropout()+[self.tf_keep_rate]
+    def save(self,**kwargs):
+        if self.default_rate!=1.0: kwargs["default_rate"]=self.default_rate
+        return super().save(self,**kwargs)
+
+class BatchNormLayer(SimpleLayer): #Batch normalization
+    type="Batch_Norm"
     def __init__(self,**kwargs):
-        layers=[]
-        Composite.__init__(self,**kwargs)
-        for layer in self._layers:
-            self.add_sublayer(Layer(x=self.y,**layer),_layer=True)
-            self.y=self.layers[-1].get()
+        super().__init__(**kwargs)
+        self.mean,self.std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
+        self.y=(self.y-mean)/std
+
+
+class LocalResponseNormLayer(SimpleLayer): #Local response normalization
+    type="Local_Response_Norm"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        assert(self.y.get_shape().ndims==4), "Local response normalization requires a 4d tensor"
+        self.y=tf.nn.local_response_normalization(self.y)
+
+
+
+
+###Linear and related layers
+class LinearLayer(SimpleLayer):
+    type="Linear"
+    def __init__(self,size=1,rand_scale=0.1,**kwargs):
+        super().__init__(**kwargs)
+        self.size=size                       #Number of output channels
+        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
+        shape=self.y.get_shape()[1:]
+        if len(shape)>1:
+            self.y=tf.reshape(self.y,[-1,shape.num_elements()])
+        self.shape=[shape.num_elements(),size]
+        if "_cloned_layer" in kwargs:
+            self.w=kwargs["_cloned_layer"].w
+            self.b=kwargs["_cloned_layer"].b
+        else:
+            self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
+        self.y=tf.matmul(self.y,self.w)+self.b
+    def save(self,**kwargs):
+        kwargs["size"]=self.size
+        kwargs["rand_scale"]=self.rand_scale
+        return super().save(**kwargs)
+    def get_weights(self):
+        return super().get_weights()+[self.w]
+    def get_biases(self):
+        return super().get_biases()+[self.b]
+            
+
+class SimpleRelu(SimpleLayer):
+    type="Simple_Relu"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.relu(self.y)
+        
+
+class ReluLayer(LinearLayer):
+    type="Relu"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.relu=self.add_sublayer(SimpleRelu(x=self.y))
+        self.y=self.relu.y
+        
+class SimpleSoftmax(SimpleLayer):
+    type="Simple_Softmax"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.softmax(self.y)
+        
+class SoftmaxLayer(LinearLayer):
+    type="Softmax"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.softmax=self.add_sublayer(SimpleSoftmax(x=self.y))
+        self.y=self.softmax.y
+        
+class SimpleSigmoid(SimpleLayer):
+    type="Simple_Sigmoid"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.sigmoid(self.y)
+        
+class SigmoidLayer(LinearLayer):
+    type="Sigmoid"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.sigmoid=self.add_sublayer(SimpleSigmoid(x=self.y))
+        self.y=self.sigmoid.y
+        
+class QuadLayer(LinearLayer):
+    type="Quadratic"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.mul(self.y,self.y)
+
+###Convolution and pooling
+class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abstract class)
+    type="Abstract"
+    def __init__(self,pad="VALID",window=3,stride=1,**kwargs):
+        super().__init__(**kwargs)
+        self.pad=pad                         #Type of padding used
+        self.window=window                   #Size of the input window
+        self.stride=stride                   #Stride distance of the input window
+    def save(self,**kwargs):
+        kwargs["pad"]=self.pad
+        kwargs["window"]=self.window
+        kwargs["stride"]=self.stride
+        return super().save(**kwargs)
+        
+class ConvLayer(WindowLayer):
+    type="Convolution"
+    def __init__(self,size=1,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
+        super().__init__(**kwargs)
+        self.size=size                       #Number of output channels
+        self.relu=relu                       #Optional relu on the output
+        self._input_channels=input_channels  #(Optional) overrides the number of input channels, needed for variable size input
+        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
+        self.input_channels=self._input_channels or self.y.get_shape()[3].value
+        self.filter_shape=[self.window,self.window,self.input_channels,self.size]
+        if "_cloned_layer" in kwargs:
+            self.w=kwargs["_cloned_layer"].w
+            self.b=kwargs["_cloned_layer"].b
+        else:
+            self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
+        self.set(tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b))
+        if self.relu:
+            self.y=tf.nn.relu(self.y)
+    def get_weights(self):
+        return super().get_weights()+[self.w]
+    def get_biases(self):
+        return super().get_biases()+[self.b]
+    def save(self,**kwargs):
+        kwargs["size"]=self.size
+        kwargs["relu"]=self.relu
+        kwargs["input_channels"]=self._input_channels
+        kwargs["rand_scale"]=self.rand_scale
+        return super().save(**kwargs)
+    
+class PoolLayer(WindowLayer):
+    type="Pool"
+    _poolTypeError="Invlid pooling type: %s"
+    def __init__(self,pool_type="max",stride=2,**kwargs):
+        super().__init__(stride=stride,**kwargs)
+        self.pool_type=pool_type             #avg or max pooling 
+        self.ksize=[1, self.window, self.window, 1]
+        self.strides=[1, self.stride, self.stride, 1]
+        if self.pool_type=="max":
+            self.y=tf.nn.max_pool(self.y, ksize=self.ksize, 
+                      strides=self.strides,padding=self.pad)
+        elif self.pool_type=="avg":
+            self.y=tf.nn.avg_pool(self.y, ksize=self.ksize, 
+                      strides=self.strides,padding=self.pad)
+        else: 
+            raise Exception(self._poolTypeError%self.pool_type)
+    def save(self,**kwargs):
+        kwargs["pool_type"]=self.pool_type
+        return super().save(**kwargs)
+
+
+    
+
+
+    
+
+
 
 
 ###Complex Layers
-class RandomCombineLayer(CombineLayer):
+'''class RandomCombineLayer(CombineLayer):
     type="Random_Combined"
     def __init__(self,channels=1,**kwargs):
         layers=[{"Type":"Identity"},kwargs.update({"Type":"Random","shape":[-1 for i in range(x.get_shape().ndims-1)]+[channels]})]
-        CombineLayer.__init__(self,layers=layers)
+        super().__init__(layers=layers,**kwargs)
     def save(self,**kwargs):
-        kwargs=self.layers[1].save(kwargs)
+        kwargs.update(self.layers[1].save(kwargs))
         kwargs["type"]=self.type
-        return kwargs
+        return kwargs'''
     
-    
+#Old
 '''def RandomLayer(x,dic):
     new_dic={"type":"combine_layer","layers":[]}
     new_dic["layers"].append({"type":"identity"})
@@ -580,8 +492,14 @@ def MipmapLayer(x,dic):
     new_dic={"type":"pool","stride":dic["scale"],"window":dic["scale"],"pool_type":"avg","pad":"VALID"}
     return layerFactory(x,new_dic)'''
 
-
-        
+'''class Network(Composite):#Similar to SimpleLayer, but proper layers are distinguished from feature layers
+    type="Network"
+    def __init__(self,**kwargs):
+        layers=[]
+        Composite.__init__(self,**kwargs)
+        for layer in self._layers:
+            self.add_sublayer(Layer(x=self.y,**layer),_layer=True)
+            self.y=self.layers[-1].get()'''  
 
 '''    
 class ConvNet(BasicNetwork):
