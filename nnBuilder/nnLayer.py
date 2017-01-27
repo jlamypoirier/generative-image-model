@@ -44,6 +44,89 @@ class LayerFactory:
 Layer=LayerFactory.build
 
 
+#Functionality of SimpleLayer Spread into multiple classes
+class _LayerRaw:#Most basic layer, has a type, an input and an output
+    type="Abstract"
+    _uncaughtArgumentWarning="Unknown argument: %s"
+    _finishedError="Trying to set "
+    def __init__(self,x=None,**kwargs):
+        for kw in kwargs:
+            warnings.warn(self._uncaughtArgumentWarning%kw)
+        self.type=self.__class__.type        #The type of the layer (user-friendly class name)
+        self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
+        self.x=self._x                       #The input, converted to tensor-like (can be None)
+        self._y=self.x                       #The output of the layer during construction (actual output obtained through get)
+        if isinstance(self._y,_LayerRaw):
+            self._y=self._y.get()
+            self._x=self._x.get()
+        self.finished=False
+    def finish(self):
+        if not self.finished:
+            self.y=self._y                   #The final output
+            self.finished=True
+    def getIn(self):
+        return self.x
+    def get(self):                           #Garanteed to be the final output
+        self.finish()
+        return self.y
+    def set(self,y):                         #Properly updates the output
+        assert(not self.finished), self._finishedError
+        self._y=y
+    def save(self,**kwargs):
+        kwargs["type"]=self.type
+        return kwargs
+
+
+class _LayerInstance(_LayerRaw):#Implement session management
+    type="Abstract"
+    _sessionError="No active session"
+    def __init__(self,x=None,**kwargs):
+        super().__init__(**kwargs)
+        self.sess=None
+    def start(self,sess):
+        self.finish()
+        self.sess=sess       #Should be a SessManager
+    def stop(self):
+        self.sess=None
+    def run(self):
+        assert(self.sess!=None),self._sessionError
+        return self.sess.run(self.y)
+    
+class _LayerCopy(_LayerRaw):#Implement copying and cloning
+    type="Abstract"
+    _clonedTypeError='Trying to clone layers of different type: "%s" vs "%s"'
+    _copyManagerError="Copying variable requires a manager with an active session"
+    _copySessionError="Copying variable requires both networks to have the same active session"
+    _copyNetworkError="Copying variable requires identical networks"
+    def __init__(self,x=None,_cloned=None,**kwargs):
+        super().__init__(**kwargs)
+        self.cloned=_cloned         #The cloned layer, if applicable (should be set through the cloner function only)
+        if self.cloned!=None:
+            assert(self.type==self.cloned.type), self._clonedTypeError%(self.type,self.cloned.type)
+    def copy(self,                            #Makes a copy of the graph, with a new variable set
+             x=None,                          #Feed a new input x or use the existing one (x=None)
+             sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
+             copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
+             **kwargs                         #Override some other arguments (risky if copy_vars=True)
+            ):
+        if i==None:
+            x=self.x
+        layer=LayerFactory(x=x,**self.save().update(kwargs))
+        if sess!=None:
+            sess.add([new_layer])
+        elif self.sess!=None:
+            self.sess.add([new_layer])
+        if copy_vars:
+            assert(manager!=None and layer.sess.running), self._copyManagerError
+            self.copy_vars_to(layer)
+        
+
+
+
+
+
+
+
 
 
 ###Basic layer
@@ -59,32 +142,23 @@ class SimpleLayer:
             warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
-        self.x=self._x                       #The input, guaranteed to be a tensor-like or None
-        self.features=features               #A set of layers modifying the input. Can be any layer, but meant for feature layers
+        self.x=self._x                       #The input, converted to tensor-like (can be None)
+        self.in_features=.in_features        #A set of layers modifying the input. Can be any layer, but meant for feature layers
+        self.out_features=.out_features      #A set of layers modifying the output.
         self.cloned=_cloned_layer            #The cloned layer, if applicable (should be set through the cloner function only)
-        self.y=self.x                        #The output of the layer
+        self._y=self.x                       #The output of the layer during construction (actual output obtained through get)
         self.sublayers=[]                    #All the sublayers of the layer
-        self.feature_sublayers=[]            #The feature sublayers
+        self.feature_sublayers_in=[]            #The feature sublayers
+        self.feature_sublayers_out=[]            #The feature sublayers
         if self.cloned!=None:
             assert(self.type==_cloned_layer.type), self._clonedTypeError%(self.type,_cloned_layer.type)
-        if isinstance(self.y,SimpleLayer):
-            self.y=self.y.get()
+        if isinstance(self._y,SimpleLayer):
+            self._y=self._y.get()
             self._x=self._x.get()
-        if self.cloned:
-            cloned_features=self.cloned.features
-            assert(len(self.features)<=len(cloned_features)) #Allow removing some features, but only the last ones
-        else:
-            cloned_features=[None]*len(self.features)
-        for i,feature in enumerate(self.features):#Features implemented in the order they are given
-            if type(feature)==dict:
-                layer=Layer(x=self.y,_cloned_layer=cloned_features[i],**feature)
-            else:
-                layer=Layer(x=self.y,type=feature,_cloned_layer=cloned_features[i])
-            self.add_sublayer(layer,_feature=True)
-            self.y=layer.get()
     def save(self,**kwargs):
         kwargs["type"]=self.type
-        if len(self.feature_sublayers)>0:kwargs["features"]=[feature.save() for feature in self.feature_sublayers]
+        if len(self.feature_sublayers_in)>0:kwargs["in_features"]=[feature.save() for feature in self.feature_sublayers_in]
+        if len(self.feature_sublayers_out)>0:kwargs["out_features"]=[feature.save() for feature in self.feature_sublayers_out]
         return kwargs
     def _getLabels(self): #Need label producing layers
         if "labels" in dir(self):
@@ -101,10 +175,12 @@ class SimpleLayer:
         if isinstance(self.x,SimpleLayer):
             return self.x.getLabels()
         return None
-    def add_sublayer(self,sublayer,_feature=False):
+    def add_sublayer(self,sublayer,_feature_in=False,_feature_out=False):
         self.sublayers.append(sublayer)
-        if _feature:
-            self.feature_sublayers.append(sublayer)
+        if _feature_in:
+            self.feature_sublayers_in.append(sublayer)
+        if _feature_out:
+            self.feature_sublayers_out.append(sublayer)
         return sublayer
     def get(self):
         return self.y
@@ -157,6 +233,59 @@ class SimpleLayer:
         new_layer=LayerFactory(x=x or self.x,_cloned_layer=self,**self.save().update(kwargs))
         if manager!=None:
             manager.add([new_layer])
+    def make_features_in(self):
+        if self.cloned:
+            cloned_features=[feature.save() for feature in self.cloned.feature_sublayers_in]
+            assert(len(self.features_in)<=len(cloned_features)) #Allow removing some features, but only the last ones
+        else:
+            cloned_features=[{}]*len(self.features)
+        for i,feature in enumerate(self.features_in):#Features implemented in the order they are given
+            if type(feature)==dict:
+                layer=Layer(x=self._y,_cloned_layer=cloned_features[i],**feature)
+            else:
+                layer=Layer(x=self._y,type=feature,_cloned_layer=cloned_features[i])
+            self.add_sublayer(layer,_feature_in=True)
+            self._y=layer.get()
+    def make_features_out(self):
+        if self.cloned:
+            cloned_features=[feature.save() for feature in self.cloned.feature_sublayers_out]
+            assert(len(self.features_out)<=len(cloned_features)) #Allow removing some features, but only the last ones
+        else:
+            cloned_features=[{}]*len(self.features)
+        for i,feature in enumerate(self.features_in):#Features implemented in the order they are given
+            if type(feature)==dict:
+                layer=Layer(x=self._y,_cloned_layer=cloned_features[i],**feature)
+            else:
+                layer=Layer(x=self._y,type=feature,_cloned_layer=cloned_features[i])
+            self.add_sublayer(layer,_feature_in=True)
+            self._y=layer.get()
+    def make_sublayers(self,type,update_y=True,**kwargs):
+        if type=="in":
+            desc=self.features_in
+            clone_source="feature_sublayers_in"
+            sub_arg=dict(_feature_in=True)
+        elif type=="out":
+            desc=self.features_out
+            clone_source="feature_sublayers_out"
+            sub_arg=dict(_feature_out=True)
+        elif type="custom": #For use by derived classes
+            assert(all(key in kwargs for key in ["desc","clone_source","sub_arg"]))
+        else:
+            raise Exception("Unknown sublayer type")
+            
+        if self.cloned:
+            cloned=getattr(self.cloned,clone_source)
+            assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
+        else:
+            cloned=[{}]*len(desc)
+        for i,_desc in enumerate(desc):#Features implemented in the order they are given
+            if type(_desc)==dict:
+                layer=Layer(x=self._y,_cloned_layer=cloned[i],**_desc)
+            else:
+                layer=Layer(x=self._y,_cloned_layer=cloned[i],type=_desc)
+            self.add_sublayer(layer,**sub_arg)
+            if update_y:
+                self._y=layer.get()
             
 
 

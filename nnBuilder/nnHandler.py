@@ -47,7 +47,7 @@ class SessManager:
             self.networks+=networks
             if self.running:
                 for network in networks:
-                    network.start(self.sess)
+                    network.start(self)
     def start(self):
         assert(not self.running)
         print("Starting new session")
@@ -58,7 +58,7 @@ class SessManager:
         tf.global_variables_initializer().run()
         self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
         for network in self.networks:
-            network.start(self.sess)
+            network.start(self)
         self.running=True
         return self.sess
     def run(self,*args,**kwargs):
