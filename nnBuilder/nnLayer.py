@@ -14,6 +14,7 @@ import warnings
 #Implement "Soft Dropout"
 #Reimplement DeepDream (update nnDreamer)
 #Reimplement GAN (update nnGenerator)
+#Finish make_layer
 
 ##Fixes
 #Update nnUtils
@@ -64,9 +65,11 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
     type="Abstract"
     _uncaughtArgumentWarning="Unknown argument: %s"
     _finishedError="Trying to set the output of a finished layer"
+    _extra_args=[]
     def __init__(self,x=None,**kwargs):
         for kw in kwargs:
-            warnings.warn(self._uncaughtArgumentWarning%kw)
+            if kw not in self._extra_args:
+                warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
         self.x=self._x                       #The input, converted to tensor-like (can be None)
@@ -152,19 +155,27 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
     
 class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer types in derived classes
     type="Abstract"
-    SUBLAYER_INPUT=dict(kw="in_features",lst="sublayers_in",set_y=True)
-    SUBLAYER_OUTPUT=dict(kw="out_features",lst="sublayers_out",set_y=True)
-    SUBLAYER_PROPER=dict(kw="layers",lst="sublayers_proper",set_y=True)
-    sublayer_types=[SUBLAYER_INPUT,SUBLAYER_OUTPUT,SUBLAYER_PROPER]
-    def __init__(self,in_features=None,out_features=None,layers=None,**kwargs):
+    #A set of layers modifying the input / output
+    SUBLAYER_INPUT=dict(kw="in_features",lst="sublayers_in",set_y=True,arg=True)
+    SUBLAYER_OUTPUT=dict(kw="out_features",lst="sublayers_out",set_y=True,arg=True)#A set of layers modifying the output.
+    #Features added by derived classes, should be added before calling __init__
+    SUBLAYER_INPUT_MANAGED=dict(kw="in_features_managed",lst="sublayers_in_managed",set_y=True,arg=False,managed=True,reverse=False)
+    SUBLAYER_OUTPUT_MANAGED=dict(kw="out_features_managed",lst="sublayers_out_managed",set_y=True,arg=False,managed=True,reverse=True)
+    #The layers of the network, if applicable
+    SUBLAYER_PROPER=dict(kw="layers",lst="sublayers_proper",set_y=True,arg=True)
+    sublayer_types=[SUBLAYER_INPUT,SUBLAYER_OUTPUT,SUBLAYER_INPUT_MANAGED,SUBLAYER_OUTPUT_MANAGED,SUBLAYER_PROPER]
+    _extra_args=_LayerCopy._extra_args+[type["kw"] for type in sublayer_types if "arg" in type and type["arg"]]
+    def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.in_features=in_features or []       #A set of layers modifying the input. Can be any layer, but meant for feature layers
-        self.out_features=out_features or []     #A set of layers modifying the output.
-        self.layers=layers or []                 #The layers of the network, if applicable (same as input features)
         self.sublayers=[]                        #All the sublayers of the layer
-        for type in self.sublayer_types:         #The sublayers sorted by type
-            setattr(self,type["lst"],[])
+        for type in self.sublayer_types:         #The sublayers sorted by type: def at getattr(self,type["kw"]
+            if "arg"in type and type["arg"] and type["kw"] in kwargs:
+                setattr(self,type["kw"],kwargs[type["kw"]])
+            elif type["kw"] not in dir(self):
+                setattr(self,type["kw"],[])
+            setattr(self,type["lst"],[])         #Instances at getattr(self,type["lst"]
         self.make_sublayers(**self.SUBLAYER_INPUT)
+        self.make_sublayers(**self.SUBLAYER_INPUT_MANAGED)
         self.make_sublayers(**self.SUBLAYER_PROPER)
     def save(self,**kwargs):
         for type in self.sublayer_types:
@@ -184,15 +195,25 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
                 layer=Layer(x=self.y,_cloned=cloned[i],**_desc)
             else:
                 layer=Layer(x=self.y,_cloned=cloned[i],type=_desc)
-            self.add_sublayer(layer,kw=kw,lst=lst)
-            if set_y:
-                self.set(layer.get())
-    def add_sublayer(self,layer,finish=True,**kwargs):
+            self.add_sublayer(layer,lst=lst,set_y=set_y)
+    def add_sublayer_def(sublayer_type,inner=True,**kwargs):
+        assert("x" not in dir(self)), "Sublayer definitions must be added before initializing the layer"
+        assert("managed" in sublayer_type and sublayer_type["managed"]), "Adding a definition for a wrong type of layer"
+        if sublayer_type["kw"] not in dir(self):
+            setattr(self,sublayer_type["kw"],[])
+        reverse="reverse" in sublayer_type and sublayer_type["reverse"] or False
+        if inner==reverse:
+            getattr(self,sublayer_type["kw"]).prepend(**kwargs)
+        else:
+            getattr(self,sublayer_type["kw"]).append(**kwargs)
+    def add_sublayer(self,layer,lst=None,set_y=False,finish=True,**kwargs):
         self.sublayers.append(layer)
-        if finish:
+        if finish or set_y:
             layer.finish()
-        if "lst" in kwargs and kwargs["lst"] in dir(self):
-            getattr(self,kwargs["lst"]).append(layer)
+        if lst!=None and lst in dir(self):
+            getattr(self,lst).append(layer)
+        if set_y:
+            self.set(layer.get())
         return layer
     def start(self,sess):#Risky if the starting order matters?
         for sublayer in self.sublayers: sublayer.start(sess) 
@@ -202,6 +223,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         for sublayer in self.sublayers: sublayer.stop() 
     def finish(self):
         if not self.finished:
+            self.make_sublayers(**self.SUBLAYER_OUTPUT_MANAGED)
             self.make_sublayers(**self.SUBLAYER_OUTPUT)
             for sublayer in self.sublayers:
                 sublayer.finish()
@@ -306,8 +328,35 @@ class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff 
         kwargs["combine_op"]=self.combine_op
         return super().save(**kwargs)
 
+#Not complete
+#Template for simple layer classes
+#Make layers from fun, must take and return a single Tensor
+def make_layer(name,fun=None,class_name=None,BaseClass=SimpleLayer):#Add option to put feature layers
+    assert(issubclass(BaseClass,SimpleLayer)),"Class %s is not a layer type"%BaseClass.__name__
+    class LayerClass(SimpleLayer):
+        def __init__(self,**kwargs):
+            super().__init__(**kwargs)
+            if fun!=None:
+                self.y=fun(self.y)
+    if class_name==None:
+        class_name=name #Needs to be valid class name?
+    NewClass.__name__=class_name
+    return NewClass
+    
+        
+        
+    
+    
 
-#Feature layers
+
+
+
+
+
+
+
+
+###Feature layers
 class DropoutLayer(SimpleLayer):
     type="Dropout"
     def __init__(self,default_rate=1.0,**kwargs):
@@ -367,45 +416,42 @@ class LinearLayer(SimpleLayer):
         return super().get_biases()+[self.b]
             
 
-class SimpleRelu(SimpleLayer):
-    type="Simple_Relu"
+class ReluFeature(SimpleLayer):
+    type="Relu_Feature"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
         self.y=tf.nn.relu(self.y)
         
+class SoftmaxFeature(SimpleLayer):
+    type="Softmax_Feature"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.softmax(self.y)
 
+class SigmoidFeature(SimpleLayer):
+    type="Sigmoid_Feature"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.sigmoid(self.y)
+        
+#Same as linear layer with feature on output (move to actual features?)
 class ReluLayer(LinearLayer):
     type="Relu"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.relu=self.add_sublayer(SimpleRelu(x=self.y))
-        self.y=self.relu.get()
-        
-class SimpleSoftmax(SimpleLayer):
-    type="Simple_Softmax"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.nn.softmax(self.y)
+        self.relu=self.add_sublayer(ReluFeature(x=self.y),set_y=True)
         
 class SoftmaxLayer(LinearLayer):
     type="Softmax"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.softmax=self.add_sublayer(SimpleSoftmax(x=self.y))
-        self.y=self.softmax.get()
-        
-class SimpleSigmoid(SimpleLayer):
-    type="Simple_Sigmoid"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.nn.sigmoid(self.y)
+        self.softmax=self.add_sublayer(SoftmaxFeature(x=self.y),set_y=True)
         
 class SigmoidLayer(LinearLayer):
     type="Sigmoid"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.sigmoid=self.add_sublayer(SimpleSigmoid(x=self.y))
-        self.y=self.sigmoid.get()
+        self.sigmoid=self.add_sublayer(SigmoidFeature(x=self.y),set_y=True)
         
 class QuadLayer(LinearLayer):
     type="Quadratic"

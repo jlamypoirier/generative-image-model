@@ -178,7 +178,7 @@ class ClassifierTrainer(Optimizer):
             self.y=self.sigmoidLayer.get()
             self.wrong_prediction = tf.not_equal(tf.greater(self.y, 0.5), tf.greater(self.labels, 0.5))
         else:
-            self.softmaxLayer=SimpleSoftmax(x=self.logits)
+            self.softmaxLayer=SoftmaxFeature(x=self.logits)
             self.y=self.softmaxLayer.get()
             self.wrong_prediction = tf.not_equal(tf.argmax(self.y, 1), tf.argmax(self.labels, 1))
         self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))

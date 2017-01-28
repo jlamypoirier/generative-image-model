@@ -191,7 +191,7 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
         self.epoch=tf.div((self.batch_n+1)*self.batch-1,self.data_n)
         self.last_y=tf.slice(self.y, begin=self.begin_no_update,size=self.size)
         self.y=tf.slice(self.y, begin=self.begin,size=self.size)
-        labels=self.getInputLabels()
+        labels=self.get_input_labels()
         if labels!=None:
             labels=tf.tile(labels,[2,1])
             self.label_begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n),0])

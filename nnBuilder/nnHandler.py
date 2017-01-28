@@ -58,9 +58,9 @@ class SessManager:
         self.sess=tf.InteractiveSession(config=config)
         tf.global_variables_initializer().run()
         self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
+        self.running=True
         for network in self.networks:
             network.start(self)
-        self.running=True
         return self.sess
     def run(self,*args,**kwargs):
         self.maybe_start()
