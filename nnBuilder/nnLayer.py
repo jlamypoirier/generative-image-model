@@ -158,12 +158,13 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
     #A set of layers modifying the input / output
     SUBLAYER_INPUT=dict(kw="in_features",lst="sublayers_in",set_y=True,arg=True)
     SUBLAYER_OUTPUT=dict(kw="out_features",lst="sublayers_out",set_y=True,arg=True)#A set of layers modifying the output.
-    #Features added by derived classes, should be added before calling __init__
-    SUBLAYER_INPUT_MANAGED=dict(kw="in_features_managed",lst="sublayers_in_managed",set_y=True,arg=False,managed=True,reverse=False)
-    SUBLAYER_OUTPUT_MANAGED=dict(kw="out_features_managed",lst="sublayers_out_managed",set_y=True,arg=False,managed=True,reverse=True)
     #The layers of the network, if applicable
     SUBLAYER_PROPER=dict(kw="layers",lst="sublayers_proper",set_y=True,arg=True)
-    sublayer_types=[SUBLAYER_INPUT,SUBLAYER_OUTPUT,SUBLAYER_INPUT_MANAGED,SUBLAYER_OUTPUT_MANAGED,SUBLAYER_PROPER]
+    #Layers added by derived classes, should be added before calling __init__
+    SUBLAYER_INPUT_MANAGED=dict(kw="in_features_managed",lst="sublayers_in_managed",set_y=True,arg=False,managed=True,reverse=False)
+    SUBLAYER_OUTPUT_MANAGED=dict(kw="out_features_managed",lst="sublayers_out_managed",set_y=True,arg=False,managed=True,reverse=True)
+    SUBLAYER_PROPER_MANAGED=dict(kw="layers_managed",lst="sublayers_proper_managed",set_y=True,arg=False,managed=True,reverse=False)
+    sublayer_types=[SUBLAYER_INPUT,SUBLAYER_OUTPUT,SUBLAYER_INPUT_MANAGED,SUBLAYER_OUTPUT_MANAGED,SUBLAYER_PROPER,SUBLAYER_PROPER_MANAGED]
     _extra_args=_LayerCopy._extra_args+[type["kw"] for type in sublayer_types if "arg" in type and type["arg"]]
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -177,11 +178,13 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         self.make_sublayers(**self.SUBLAYER_INPUT)
         self.make_sublayers(**self.SUBLAYER_INPUT_MANAGED)
         self.make_sublayers(**self.SUBLAYER_PROPER)
+        self.make_sublayers(**self.SUBLAYER_PROPER_MANAGED)
     def save(self,**kwargs):
         for type in self.sublayer_types:
-            sublayers=getattr(self,type["lst"])
-            if len(sublayers)>0:
-                kwargs[type["kw"]]=[layer.save() for layer in sublayers]
+            if not ("managed" in type and type["managed"]):
+                sublayers=getattr(self,type["lst"])
+                if len(sublayers)>0:
+                    kwargs[type["kw"]]=[layer.save() for layer in sublayers]
         return super().save(**kwargs)
     def make_sublayers(self,kw,lst,set_y,**kwargs):
         desc=getattr(self,kw)
@@ -196,16 +199,16 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
             else:
                 layer=Layer(x=self.y,_cloned=cloned[i],type=_desc)
             self.add_sublayer(layer,lst=lst,set_y=set_y)
-    def add_sublayer_def(sublayer_type,inner=True,**kwargs):
+    def add_sublayer_def(self,sublayer_type,inner=True,**kwargs):
         assert("x" not in dir(self)), "Sublayer definitions must be added before initializing the layer"
         assert("managed" in sublayer_type and sublayer_type["managed"]), "Adding a definition for a wrong type of layer"
         if sublayer_type["kw"] not in dir(self):
             setattr(self,sublayer_type["kw"],[])
         reverse="reverse" in sublayer_type and sublayer_type["reverse"] or False
         if inner==reverse:
-            getattr(self,sublayer_type["kw"]).prepend(**kwargs)
+            getattr(self,sublayer_type["kw"]).insert(0,kwargs)
         else:
-            getattr(self,sublayer_type["kw"]).append(**kwargs)
+            getattr(self,sublayer_type["kw"]).append(kwargs)
     def add_sublayer(self,layer,lst=None,set_y=False,finish=True,**kwargs):
         self.sublayers.append(layer)
         if finish or set_y:
@@ -272,11 +275,41 @@ class SimpleLayer(_LayerVars):
     type="Network"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-
+        
+#Template for simple layer classes. Possible uses:
+#Start from any existing layer type
+#Modify the output using a function fun, must take and return a single Tensor
+#Add input and/or output features to the layer
+#Impose some fixed argument values to a layer
+def make_layer(name,fun=None,BaseClass=SimpleLayer,in_features=None,out_features=None,**kwargs):
+    assert(issubclass(BaseClass,SimpleLayer)),"Class %s is not a layer type"%BaseClass.__name__
+    class LayerClass(BaseClass):
+        type=name
+        def __init__(self,**kwargs1):
+            for arg in kwargs1:
+                if arg in kwargs:
+                    warnings.warn("Argument ignored: %s"%kw)
+            if in_features!=None:
+                for feature in in_features:
+                    if type(feature)==string:
+                        feature={"type":feature}
+                    self.add_sublayer_def(sublayer_type=self.SUBLAYER_INPUT_MANAGED,**feature)
+            if out_features!=None:
+                for feature in out_features:
+                    if type(feature)==str:
+                        feature={"type":feature}
+                    self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,**feature)
+            kwargs1.update(kwargs)
+            super().__init__(**kwargs1)
+            if fun!=None:
+                self.y=fun(self.y)
+    LayerClass.__name__=name
+    LayerFactory._add_class(LayerClass)
+    return LayerClass
 
 ###Layer combining
 class SimpleCombine:#Auxiliary class to Combine (needs reworking)
-    _combineTypeError="Invlid combine type: %s"
+    _combineTypeError="Invalid combine type: %s"
     _combineLengthError="Combine operation %s takes exactly 2 arguments (%s given)"
     _combineShapeError="Shapes %s and %s are incompatible for the combine operation %s"
     def __init__(self,x,combine_op="combine"):
@@ -316,43 +349,26 @@ class SimpleCombine:#Auxiliary class to Combine (needs reworking)
 class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff handled by _LayerTree class)
     type="Combine"
     SUBLAYER_COMBINE=dict(kw="combined_layers",lst="sublayers_combined",set_y=False)
-    sublayer_types=_LayerTree.sublayer_types+[SUBLAYER_COMBINE]
+    SUBLAYER_COMBINE_MANAGED=dict(kw="combined_layers_managed",lst="sublayers_combined_managed",set_y=False,managed=True,reverse=False)
+    sublayer_types=_LayerTree.sublayer_types+[SUBLAYER_COMBINE,SUBLAYER_COMBINE_MANAGED]
+    _combineManagedError="A combine layer should not combine both managed and unmanaged layers"
     def __init__(self,combine_op="combine",combined_layers=[],**kwargs):
         super().__init__(**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
         self.layers=layers                   #The combined layers
         self.make_sublayers(**self.SUBLAYER_COMBINE)
-        self.combine=SimpleCombine([layer.get() for layer in self.sublayers_combined],combine_op=self.combine_op)
+        self.make_sublayers(**self.SUBLAYER_COMBINE_MANAGED)
+        assert(len(self.sublayers_combined)==0 or len(self.sublayers_combined_managed)==0),self._combineManagedError
+        self.combine=SimpleCombine([layer.get() for layer in self.sublayers_combined+self.sublayers_combined_managed],
+                                   combine_op=self.combine_op)
         self.y=self.combine.y
     def save(self,**kwargs):
         kwargs["combine_op"]=self.combine_op
         return super().save(**kwargs)
 
-#Not complete
-#Template for simple layer classes
-#Make layers from fun, must take and return a single Tensor
-def make_layer(name,fun=None,class_name=None,BaseClass=SimpleLayer):#Add option to put feature layers
-    assert(issubclass(BaseClass,SimpleLayer)),"Class %s is not a layer type"%BaseClass.__name__
-    class LayerClass(SimpleLayer):
-        def __init__(self,**kwargs):
-            super().__init__(**kwargs)
-            if fun!=None:
-                self.y=fun(self.y)
-    if class_name==None:
-        class_name=name #Needs to be valid class name?
-    NewClass.__name__=class_name
-    return NewClass
+
+
     
-        
-        
-    
-    
-
-
-
-
-
-
 
 
 
@@ -414,9 +430,13 @@ class LinearLayer(SimpleLayer):
         return super().get_weights()+[self.w]
     def get_biases(self):
         return super().get_biases()+[self.b]
-            
 
-class ReluFeature(SimpleLayer):
+
+ReluFeature=make_layer(name="Relu_Feature",fun=tf.nn.relu,BaseClass=SimpleLayer)
+SoftmaxFeature=make_layer(name="Softmax_Feature",fun=tf.nn.softmax,BaseClass=SimpleLayer)
+SigmoidFeature=make_layer(name="Sigmoid_Feature",fun=tf.nn.sigmoid,BaseClass=SimpleLayer)
+
+'''class ReluFeature(SimpleLayer):
     type="Relu_Feature"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -432,10 +452,16 @@ class SigmoidFeature(SimpleLayer):
     type="Sigmoid_Feature"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.y=tf.nn.sigmoid(self.y)
+        self.y=tf.nn.sigmoid(self.y)'''
         
 #Same as linear layer with feature on output (move to actual features?)
-class ReluLayer(LinearLayer):
+
+ReluLayer=make_layer(name="Relu",out_features=["Relu_Feature"],BaseClass=LinearLayer)
+SoftmaxLayer=make_layer(name="Softmax",out_features=["Softmax_Feature"],BaseClass=LinearLayer)
+SigmoidLayer=make_layer(name="Sigmoid",out_features=["Sigmoid_Feature"],BaseClass=LinearLayer)
+
+
+'''class ReluLayer(LinearLayer):
     type="Relu"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -457,7 +483,7 @@ class QuadLayer(LinearLayer):
     type="Quadratic"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-        self.y=tf.mul(self.y,self.y)
+        self.y=tf.mul(self.y,self.y)'''
 
 ###Convolution and pooling
 class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abstract class)
@@ -476,6 +502,8 @@ class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abs
 class ConvLayer(WindowLayer):
     type="Convolution"
     def __init__(self,size=1,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
+        if relu:
+            self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,type="Relu_Feature")
         super().__init__(**kwargs)
         self.size=size                       #Number of output channels
         self.relu=relu                       #Optional relu on the output
@@ -490,8 +518,6 @@ class ConvLayer(WindowLayer):
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
         self.set(tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b))
-        if self.relu:
-            self.y=tf.nn.relu(self.y)
     def get_weights(self):
         return super().get_weights()+[self.w]
     def get_biases(self):
