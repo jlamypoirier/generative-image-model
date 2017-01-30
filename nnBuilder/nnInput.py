@@ -47,7 +47,7 @@ class BasicInputLayer(SimpleLayer):
     _noShapeError="Can't deduce the shape from the input: no input tensor given"
     _dimensionError="The input tensor and the given shape have different dimension: %s vs %s"
     def __init__(self,shape=None,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self._shape=shape                    #Shape of the tensor, or None to keep arbitrary, or -1 to deduce from x
         self.shape=shape                     #Can set individual components to None or -1
         self.var_dim=self.shape==None
@@ -67,7 +67,7 @@ class BasicInputLayer(SimpleLayer):
             self.shape=tf.concat(0,shape)
     def save(self,**kwargs):
         kwargs["shape"]=self._shape
-        return SimpleLayer.save(self,**kwargs)
+        return super().save(self,**kwargs)
 
 
 class PlaceholderLayer(BasicInputLayer):     
@@ -76,20 +76,20 @@ class PlaceholderLayer(BasicInputLayer):
     #    Whole shape is forgotten if any component is set to None
     type="Placeholder"
     def __init__(self,ignore_shape=False,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.y=tf.placeholder_with_default(self.y,self.shape)
 
 class InputLayer(BasicInputLayer):
     type="Input"
     def __init__(self,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.y=tf.placeholder(dtype=tf.float32,shape=self.shape)
     
 class RandomLayer(BasicInputLayer):
     type="Random"
     _shapeError="Random layer must have a fixed shape"
     def __init__(self,rand_type="normal",scale=1.,mean=0.,**kwargs):
-        BasicInputLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.rand_type=rand_type             #normal or uniform generator
         self.scale=scale                     #scale for the distribution (std or half-range)
         self.mean=mean                       #mean for the distribution
@@ -104,13 +104,13 @@ class RandomLayer(BasicInputLayer):
         kwargs["rand_type"]=self.rand_type
         kwargs["scale"]=self.scale
         kwargs["mean"]=self.mean
-        return BasicInputLayer.save(self,**kwargs)
+        return super().save(self,**kwargs)
     
 class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either x or the given file
     type="Constant"
     _noInputError="No initial value given to constant layer"
     def __init__(self,folder="",file=None,label_file=None,convert_file=True,normalize=False,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.folder=folder                   #(Optional) the folder for the file
         self.file=file                       #The file name, if loading form a file
         self.label_file=label_file           #A file containing the labels
@@ -153,7 +153,7 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         kwargs["file"]=self.file
         kwargs["convert_file"]=self.convert_file
         kwargs["normalize"]=self.normalize
-        return SimpleLayer.save(self,**kwargs)
+        return super().save(self,**kwargs)
 
 
 
@@ -163,22 +163,22 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
 class DataLayer(SimpleLayer):
     type="Abstract"
     def __init__(self,batch=32,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.batch=batch                #The number of elements in a batch
     def save(self,**kwargs):
         kwargs["batch"]=self.batch
-        return Layer.save(self,**kwargs)
+        return super().save(self,**kwargs)
 
 class BatchIdentityLayer(DataLayer): #Broadcasts a tensor into a batch of identical tensors
     type="Batch_Identity"
     def __init__(self,**kwargs):
-        DataLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.y=tf.tile(tf.expand_dims(self.y,axis=0), [self.batch]+[1]*self.y.get_shape().ndims)
 
 class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shuffling
     type="Batch_Slice"
     def __init__(self,**kwargs):
-        DataLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.data_n=tf.shape(self.y)[0]
         self.y=tf.tile(self.y, [2]+[1]*(self.y.get_shape().ndims-1))#(safely) assumes self.batch < self.y.get_shape().values[0]
         self.batch_n=tf.Variable(-1,dtype=tf.int32) #Will be 0 on first batch
@@ -191,7 +191,7 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
         self.epoch=tf.div((self.batch_n+1)*self.batch-1,self.data_n)
         self.last_y=tf.slice(self.y, begin=self.begin_no_update,size=self.size)
         self.y=tf.slice(self.y, begin=self.begin,size=self.size)
-        labels=self.getInputLabels()
+        labels=self.get_input_labels()
         if labels!=None:
             labels=tf.tile(labels,[2,1])
             self.label_begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n),0])
@@ -207,7 +207,7 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
 class RandomCropLayer(SimpleLayer):
     type="Random_Crop"
     def __init__(self,shape=None,batch=False,**kwargs):
-        SimpleLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.shape=shape
         self.batch=batch                #If true, perform the operation on a batch
         if self.batch:
@@ -222,7 +222,7 @@ class RandomCropLayer(SimpleLayer):
 class MNISTLayer(DataLayer): 
     type="MNIST"
     def __init__(self,folder='/tmp/tensorflow/mnist/input_data',**kwargs):
-        DataLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.folder=folder
         self.data=mnist.read_data_sets(self.folder, one_hot=True)
         self.y, self.labels=tf.py_func(lambda :self.data.train.next_batch(self.batch), [], [tf.float32,tf.float64], stateful=True)
@@ -230,13 +230,13 @@ class MNISTLayer(DataLayer):
         self.labels=tf.cast(self.labels,tf.float32)
     def save(self,**kwargs):
         kwargs["folder"]=self.folder
-        return Layer.save(self,**kwargs)
+        return super().save(self,**kwargs)
 
 
 class CIFARLayer(DataLayer):
     type="CIFAR_10"
     def __init__(self,folder='/tmp/cifar10_data',**kwargs):
-        DataLayer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
         self.folder=folder
         self.url='http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
         self.file_name = self.url.split('/')[-1]
@@ -255,7 +255,7 @@ class CIFARLayer(DataLayer):
         self.labels=self.data.labels
     def save(self,**kwargs):
         kwargs["folder"]=self.folder
-        return Layer.save(self,**kwargs)
+        return super().save(self,**kwargs)
     def start(self,sess):
         SimpleLayer.start(self,sess)
         self.data.start(sess) 

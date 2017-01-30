@@ -7,11 +7,12 @@ from nnLayer import *
 class NetworkSaver:
     def __init__(self,network):
         self.network=network                 #Any Layer
-        self.saveDict={}
-        for i,var in enumerate(network.getVars()):
-            self.saveDict["var_%i"%i]=var
-        self.saver = tf.train.Saver(self.saveDict,max_to_keep=10000)
-        self.reset_op=tf.variables_initializer(network.getVars())
+        self.save_dict={}
+        self.vars=network.get_vars()
+        for i,var in enumerate(self.vars):
+            self.save_dict["var_%i"%i]=var
+        self.saver = tf.train.Saver(self.save_dict,max_to_keep=10000)
+        self.reset_op=tf.variables_initializer(self.vars)
         self.sess=None
     def save(self,folder="",file=None,safe=True):
         assert(self.sess!=None)
@@ -47,7 +48,7 @@ class SessManager:
             self.networks+=networks
             if self.running:
                 for network in networks:
-                    network.start(self.sess)
+                    network.start(self)
     def start(self):
         assert(not self.running)
         print("Starting new session")
@@ -57,9 +58,9 @@ class SessManager:
         self.sess=tf.InteractiveSession(config=config)
         tf.global_variables_initializer().run()
         self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
-        for network in self.networks:
-            network.start(self.sess)
         self.running=True
+        for network in self.networks:
+            network.start(self)
         return self.sess
     def run(self,*args,**kwargs):
         self.maybe_start()
@@ -82,7 +83,7 @@ class SessManager:
     def get(self):
         self.maybe_start()
         return self.sess
-    def clean(self):#Destroy everything, managed or not
+    def clean(self):#Destroys everything, managed or not
         global resize
         self.stop()
         tf.reset_default_graph()
