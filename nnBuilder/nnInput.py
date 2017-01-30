@@ -204,7 +204,7 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
         
         
 #Input processing
-class RandomCropLayer(SimpleLayer):
+'''class RandomCropLayer(SimpleLayer):
     type="Random_Crop"
     def __init__(self,shape=None,batch=False,**kwargs):
         super().__init__(**kwargs)
@@ -214,9 +214,11 @@ class RandomCropLayer(SimpleLayer):
             fn=lambda x:tf.random_crop(x,self.shape)
             self.y=tf.map_fn(fn, self.y, parallel_iterations=1024)
         else:
-            self.y=tf.random_crop(self.y,self.shape)
+            self.y=tf.random_crop(self.y,self.shape)'''
 
-
+RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=tf.random_crop,args=["shape"],shape=None)
+VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Vertical_Random_Flip",fun=tf.image.random_flip_up_down)
+HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Horizontal_Random_Flip",fun=tf.image.random_flip_left_right)
 
 #Standard datasets
 class MNISTLayer(DataLayer): 
