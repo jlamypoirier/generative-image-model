@@ -8,19 +8,7 @@ import warnings
 
 #####To do list:
 
-###Features:
-#Implement Testing Phase
-#Better input and batching
-#Input pipeline for large datasets
-#Input preprocessing
-#Implement "Soft Dropout"
-#Reimplement DeepDream (update nnDreamer)
-#Reimplement GAN (update nnGenerator)
-#More layers
-#ImageNet?
-
-
-##Fixes
+###Fixes
 #Update nnUtils
 #Rework _LayerVars
 #Rework combine ops
@@ -28,6 +16,20 @@ import warnings
 #Finish CIFAR-10 example
 #Ignore useless parameters on saving
 #More tests
+
+###Features:
+#Implement Testing Phase
+#Better input and batching
+#Input preprocessing
+#Implement "Soft Dropout"
+#Reimplement DeepDream (update nnDreamer)
+#Reimplement GAN (update nnGenerator)
+#More layers
+
+###Long term:
+#Input pipeline for large datasets
+#ImageNet?
+#Multi-GPU?
 
 
 class LayerFactory:
@@ -282,17 +284,16 @@ class SimpleLayer(_LayerVars):
         
 #Template for simple layer classes. Possible uses:
 #Start from any existing layer type
-#Modify the output using a function fun, must take and return a single Tensor
+#Modify the output using a function fun, must take and return a single Tensor, and possibly some extra (serializable, named) arguments
 #Add input and/or output features to the layer
-#Impose some fixed argument values to a layer
-def make_layer(name,fun=None,BaseClass=SimpleLayer,in_features=None,out_features=None,**kwargs):
+#Add or mofidy a default argument values for a layer
+def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,out_features=None,**kwargs):
     assert(issubclass(BaseClass,SimpleLayer)),"Class %s is not a layer type"%BaseClass.__name__
     class LayerClass(BaseClass):
         type=name
+        if args!=None:
+            _extra_args=BaseClass._extra_args+args
         def __init__(self,**kwargs1):
-            for arg in kwargs1:
-                if arg in kwargs:
-                    warnings.warn("Argument ignored: %s"%kw)
             if in_features!=None:
                 for feature in in_features:
                     if type(feature)==string:
@@ -303,13 +304,37 @@ def make_layer(name,fun=None,BaseClass=SimpleLayer,in_features=None,out_features
                     if type(feature)==str:
                         feature={"type":feature}
                     self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,**feature)
-            kwargs1.update(kwargs)
-            super().__init__(**kwargs1)
+            kwargs2=kwargs.copy()
+            kwargs2.update(kwargs1)
+            super().__init__(**kwargs2)
+            arg_dic={}
+            if args!=None:
+                assert(fun!=None),"Argument list given but no function"
+                for arg in args:
+                    assert(arg in kwargs2),"Missing argument: %s"%arg
+                    arg_dic[arg]=kwargs2[arg]
+                    setattr(self,arg,kwargs2[arg])
             if fun!=None:
-                self.y=fun(self.y)
+                self.y=fun(self.y,**arg_dic)
+        if args!=None:
+            def save(self,**kwargs3):
+                for arg in args:
+                    val=getattr(self,arg)
+                    if val!=kwargs[arg]:
+                        kwargs3[arg]=val
+                return super().save(**kwargs3)
     LayerClass.__name__=name
     LayerFactory._add_class(LayerClass)
     return LayerClass
+
+def batch_fun(fun,parallel_iterations=1024):
+    return lambda x:tf.map_fn(fun, x, parallel_iterations=parallel_iterations)
+def make_batch_layer(name,fun,*args,make_both=True, parallel_iterations=1024,**kwargs):
+    if make_both:
+        return (make_layer(name=name,fun=fun,*args,make_both=False,**kwargs),
+                make_batch_layer(name="Batch_"+name,fun=fun,*args,make_both=False,**kwargs))
+    return make_layer(name=name,fun=batch_fun(fun,parallel_iterations),*args,**kwargs)
+
 
 ###Layer combining
 class SimpleCombine:#Auxiliary class to Combine (needs reworking)
@@ -390,20 +415,12 @@ class DropoutLayer(SimpleLayer):
         if self.default_rate!=1.0: kwargs["default_rate"]=self.default_rate
         return super().save(**kwargs)
 
-class BatchNormLayer(SimpleLayer): #Batch normalization
-    type="Batch_Norm"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.mean,self.std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
-        self.y=(self.y-mean)/std
+def _batchNormFunction(x):
+    mean,std=tf.nn.moments(x,range(len(x.get_shape().as_list())))
+    return (x-mean)/std
+BatchNormLayer=make_layer(name="Batch_Norm",fun=_batchNormFunction)
+LocalResponseNormLayer=make_layer(name="Local_Response_Norm",fun=tf.nn.local_response_normalization)
 
-
-class LocalResponseNormLayer(SimpleLayer): #Local response normalization
-    type="Local_Response_Norm"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        assert(self.y.get_shape().ndims==4), "Local response normalization requires a 4d tensor"
-        self.y=tf.nn.local_response_normalization(self.y)
 
 
 
@@ -440,24 +457,7 @@ ReluFeature=make_layer(name="Relu_Feature",fun=tf.nn.relu,BaseClass=SimpleLayer)
 SoftmaxFeature=make_layer(name="Softmax_Feature",fun=tf.nn.softmax,BaseClass=SimpleLayer)
 SigmoidFeature=make_layer(name="Sigmoid_Feature",fun=tf.nn.sigmoid,BaseClass=SimpleLayer)
 
-'''class ReluFeature(SimpleLayer):
-    type="Relu_Feature"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.nn.relu(self.y)
-        
-class SoftmaxFeature(SimpleLayer):
-    type="Softmax_Feature"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.nn.softmax(self.y)
 
-class SigmoidFeature(SimpleLayer):
-    type="Sigmoid_Feature"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.nn.sigmoid(self.y)'''
-        
 #Same as linear layer with feature on output (move to actual features?)
 
 ReluLayer=make_layer(name="Relu",out_features=["Relu_Feature"],BaseClass=LinearLayer)
@@ -465,29 +465,6 @@ SoftmaxLayer=make_layer(name="Softmax",out_features=["Softmax_Feature"],BaseClas
 SigmoidLayer=make_layer(name="Sigmoid",out_features=["Sigmoid_Feature"],BaseClass=LinearLayer)
 
 
-'''class ReluLayer(LinearLayer):
-    type="Relu"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.relu=self.add_sublayer(ReluFeature(x=self.y),set_y=True)
-        
-class SoftmaxLayer(LinearLayer):
-    type="Softmax"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.softmax=self.add_sublayer(SoftmaxFeature(x=self.y),set_y=True)
-        
-class SigmoidLayer(LinearLayer):
-    type="Sigmoid"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.sigmoid=self.add_sublayer(SigmoidFeature(x=self.y),set_y=True)
-        
-class QuadLayer(LinearLayer):
-    type="Quadratic"
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
-        self.y=tf.mul(self.y,self.y)'''
 
 ###Convolution and pooling
 class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abstract class)
@@ -574,6 +551,64 @@ class PoolLayer(WindowLayer):
         return kwargs'''
     
 #Old
+
+'''class BatchNormLayer(SimpleLayer): #Batch normalization
+    type="Batch_Norm"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.mean,self.std=tf.nn.moments(self.y,range(len(self.y.get_shape().as_list())))
+        self.y=(self.y-self.mean)/self.std
+
+
+class LocalResponseNormLayer(SimpleLayer): #Local response normalization
+    type="Local_Response_Norm"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        assert(self.y.get_shape().ndims==4), "Local response normalization requires a 4d tensor"
+        self.y=tf.nn.local_response_normalization(self.y)'''
+
+'''class ReluFeature(SimpleLayer):
+    type="Relu_Feature"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.relu(self.y)
+        
+class SoftmaxFeature(SimpleLayer):
+    type="Softmax_Feature"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.softmax(self.y)
+
+class SigmoidFeature(SimpleLayer):
+    type="Sigmoid_Feature"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.nn.sigmoid(self.y)'''
+
+'''class ReluLayer(LinearLayer):
+    type="Relu"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.relu=self.add_sublayer(ReluFeature(x=self.y),set_y=True)
+        
+class SoftmaxLayer(LinearLayer):
+    type="Softmax"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.softmax=self.add_sublayer(SoftmaxFeature(x=self.y),set_y=True)
+        
+class SigmoidLayer(LinearLayer):
+    type="Sigmoid"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.sigmoid=self.add_sublayer(SigmoidFeature(x=self.y),set_y=True)
+        
+class QuadLayer(LinearLayer):
+    type="Quadratic"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.y=tf.mul(self.y,self.y)'''
+
 '''def RandomLayer(x,dic):
     new_dic={"type":"combine_layer","layers":[]}
     new_dic["layers"].append({"type":"identity"})
