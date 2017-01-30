@@ -10,11 +10,15 @@ import warnings
 
 ###Features:
 #Implement Testing Phase
+#Better input and batching
+#Input pipeline for large datasets
 #Input preprocessing
 #Implement "Soft Dropout"
 #Reimplement DeepDream (update nnDreamer)
 #Reimplement GAN (update nnGenerator)
-#Finish make_layer
+#More layers
+#ImageNet?
+
 
 ##Fixes
 #Update nnUtils
