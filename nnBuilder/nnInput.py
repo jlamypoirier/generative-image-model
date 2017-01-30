@@ -201,9 +201,6 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
             self.last_labels=tf.slice(labels, begin=self.label_begin_no_update,size=self.label_size)
         
         
-        
-        
-#Input processing
 '''class RandomCropLayer(SimpleLayer):
     type="Random_Crop"
     def __init__(self,shape=None,batch=False,**kwargs):
@@ -215,10 +212,19 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
             self.y=tf.map_fn(fn, self.y, parallel_iterations=1024)
         else:
             self.y=tf.random_crop(self.y,self.shape)'''
+        
+#Input processing
+Whitening,BatchWhitening=make_batch_layer(name="Whitening",fun=tf.image.per_image_standardization)
+RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=lambda x,shape:tf.random_crop(x,shape),args=["shape"],shape=None)
+VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Random_Vertical_Flip",fun=tf.image.random_flip_up_down)
+HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Random_Horizontal_Flip",fun=tf.image.random_flip_left_right)
+RandomBrightness,BatchRandomBrightness=make_batch_layer(name="Random_Brightness",
+    fun=lambda x,max_delta:tf.image.random_brightness(x,max_delta=max_delta),
+    args=["max_delta"],max_delta=63)
+RandomContrast,BatchRandomContrast=make_batch_layer(name="Random_Contrast",
+    fun=lambda x,lower,upper:tf.image.random_contrast(x,lower=lower,upper=upper),
+    args=["lower","upper"],lower=0.2, upper=1.8)
 
-RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=tf.random_crop,args=["shape"],shape=None)
-VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Vertical_Random_Flip",fun=tf.image.random_flip_up_down)
-HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Horizontal_Random_Flip",fun=tf.image.random_flip_left_right)
 
 #Standard datasets
 class MNISTLayer(DataLayer): 

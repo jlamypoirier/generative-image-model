@@ -1,6 +1,7 @@
 import numpy as np
 import tensorflow as tf
 import warnings
+from functools import partial
 #import os
 #from dataProducer import *
 
@@ -18,6 +19,7 @@ import warnings
 #More tests
 
 ###Features:
+#Input pipeline
 #Implement Testing Phase
 #Better input and batching
 #Input preprocessing
@@ -27,7 +29,7 @@ import warnings
 #More layers
 
 ###Long term:
-#Input pipeline for large datasets
+#Load large datasets
 #ImageNet?
 #Multi-GPU?
 
@@ -176,7 +178,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         super().__init__(**kwargs)
         self.sublayers=[]                        #All the sublayers of the layer
         for type in self.sublayer_types:         #The sublayers sorted by type: def at getattr(self,type["kw"]
-            if "arg"in type and type["arg"] and type["kw"] in kwargs:
+            if "arg" in type and type["arg"] and type["kw"] in kwargs and kwargs[type["kw"]]!=None:
                 setattr(self,type["kw"],kwargs[type["kw"]])
             elif type["kw"] not in dir(self):
                 setattr(self,type["kw"],[])
@@ -328,7 +330,9 @@ def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,ou
     return LayerClass
 
 def batch_fun(fun,parallel_iterations=1024):
-    return lambda x:tf.map_fn(fun, x, parallel_iterations=parallel_iterations)
+    def f(x,*args,**kwargs):
+        return tf.map_fn(partial(fun,*args,**kwargs), x, parallel_iterations=parallel_iterations)
+    return f
 def make_batch_layer(name,fun,*args,make_both=True, parallel_iterations=1024,**kwargs):
     if make_both:
         return (make_layer(name=name,fun=fun,*args,make_both=False,**kwargs),
