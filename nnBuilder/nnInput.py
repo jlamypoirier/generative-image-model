@@ -160,27 +160,25 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
 class PipelineLayer(SimpleLayer):
     type="Pipeline"
     _extra_args=SimpleLayer._extra_args+["min_after_dequeue","batch"]
-    def __init__(self,make_batch=False,shuffle=False,num_threads=16,capacity=None,**kwargs):
+    def __init__(self,make_batch=False,shuffle=False,num_threads=16,capacity=None,batch_capacity=None,**kwargs):
         super().__init__(**kwargs)
         self.shuffle=shuffle
         self.num_threads=num_threads
         self.make_batch=make_batch
-        self.capacity=capacity #Samples or batches?
         self._capacity=capacity
         if self.make_batch:
             self.batch="batch" in kwargs and kwargs["batch"] or 128
-            self.capacity=self.capacity or min(4096,self.batch*16)
         else:
             if "batch" in kwargs:
                 warnings.warn(self._uncaughtArgumentWarning%"batch")
             self.batch=self.y.get_shape()[0].value
-            self.capacity=self.capacity or 32
+        self.capacity=self._capacity or min(4096,self.batch*16) #Samples, not batches (weird when make_batch=False?)
         data=[self.y]
         labels=self.get_labels()
         if labels!=None:
             data.append(labels)
         if self.shuffle:
-            self.min_after_dequeue="min_after_dequeue" in kwargs and kwargs["min_after_dequeue"] or self.capacity//4 #Samples or batches?
+            self.min_after_dequeue="min_after_dequeue" in kwargs and kwargs["min_after_dequeue"] or self.capacity//4
             output=tf.train.shuffle_batch(data, batch_size=self.batch, num_threads=self.num_threads, capacity=self.capacity,
                                           enqueue_many=not self.make_batch,min_after_dequeue=self.min_after_dequeue)
         else:
@@ -188,9 +186,11 @@ class PipelineLayer(SimpleLayer):
                 warnings.warn(self._uncaughtArgumentWarning%"min_after_dequeue")
             output=tf.train.batch(data, batch_size=self.batch, num_threads=self.num_threads, capacity=self.capacity, 
                                   enqueue_many=not self.make_batch)
-        self.y=output[0]
         if labels!=None:
+            self.y=output[0]
             self.labels=output[1]
+        else:
+            self.y=output
     def save(self,**kwargs):
         kwargs["make_batch"]=self.make_batch
         kwargs["shuffle"]=self.shuffle

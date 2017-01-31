@@ -11,6 +11,7 @@ from functools import partial
 
 ###Fixes
 #Update nnUtils
+#Solve memory issue with input pipeline
 #Rework _LayerVars
 #Rework combine ops
 #Update and add complex layers
@@ -19,7 +20,6 @@ from functools import partial
 #More tests
 
 ###Features:
-#Input pipeline
 #Implement Testing Phase
 #Better input and batching
 #Input preprocessing
@@ -118,7 +118,7 @@ class _LayerInstance(_LayerRaw):#Session management (use as base class for saver
         self.sess=None
     def run(self):
         assert(self.sess!=None),self._sessionError
-        return self.sess.run(self.y)
+        return self.sess.run(self.get())
     
 class _LayerCopy(_LayerInstance):#Copying and cloning
     type="Abstract"
@@ -424,9 +424,7 @@ def _batchNormFunction(x):
     return (x-mean)/std
 BatchNormLayer=make_layer(name="Batch_Norm",fun=_batchNormFunction)
 LocalResponseNormLayer=make_layer(name="Local_Response_Norm",fun=tf.nn.local_response_normalization)
-
-
-
+ReshapeLayer=make_layer(name="Reshape",fun=tf.reshape,args=["shape"],shape=None)
 
 
 ###Linear and related layers

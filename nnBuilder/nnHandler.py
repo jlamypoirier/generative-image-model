@@ -57,14 +57,21 @@ class SessManager:
         #config.gpu_options.per_process_gpu_memory_fraction=0.
         self.sess=tf.InteractiveSession(config=config)
         tf.global_variables_initializer().run()
-        self.threads = tf.train.start_queue_runners(coord=self.coord, start=True)
+        self.threads = tf.train.start_queue_runners(sess=self.sess,coord=self.coord, start=True)
         self.running=True
         for network in self.networks:
             network.start(self)
         return self.sess
-    def run(self,*args,**kwargs):
+    def run(self,fetches,*args,**kwargs):#Can take layers instead of tensors (does not support arbitrary nesting)
         self.maybe_start()
-        return self.sess.run(*args,**kwargs)
+        try:
+            for i,fetch in enumerate(fetches):
+                if isinstance(fetch,SimpleLayer):
+                    fetches[i]=fetch.get()
+        except:
+            if isinstance(fetches,SimpleLayer):
+                fetches=fetches.get()
+        return self.sess.run(fetches,*args,**kwargs)
     def stop(self):
         assert(self.running)
         print("Ending session")
