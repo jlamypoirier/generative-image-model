@@ -35,8 +35,10 @@ def saveTf(file,data):#No proper cleanup
         print(file)
         saver.save(sess,os.path.abspath(file),write_meta_graph=False)
 
-
-
+def writeTf(file,data):
+    writer=tf.python_io.TFRecordWriter(file)
+    writer.write(data.tostring())
+    writer.close()
 
 
 
@@ -114,12 +116,13 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         self.folder=folder                   #(Optional) the folder for the file
         self.file=file                       #The file name, if loading form a file
         self.label_file=label_file           #A file containing the labels
-        self.convert_file=convert_file       #Convert the file to Tensorflow format for efficiency (memory, startup time)
+        self.convert_file=convert_file       #Convert the file to Tensorflow format for efficiency (memory, startup time) 
+        #                                     (Tensorflow still wastes memory)
         self.normalize=normalize
         self.file_data=None
         self.file_path=os.path.join(folder,file)
         if self.convert_file:
-            self.tf_file_path=self.file_path+".tf"
+            '''self.tf_file_path=self.file_path+".tf"
             self.shape_file_path=self.file_path+".shape.npy"
             if os.path.isfile(self.tf_file_path+".index") and os.path.isfile(self.shape_file_path):
                 self.shape=np.load(self.shape_file_path)
@@ -127,8 +130,22 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
                 self.load_file()
                 saveTf(self.tf_file_path,self.file_data)
                 np.save(self.shape_file_path,self.shape)
-            self.y=tf.Variable(tf.zeros(shape=self.shape, dtype=tf.float32))
-            self.saver=tf.train.Saver({"data":self.y},max_to_keep=10000)
+            #self.y=tf.Variable(tf.zeros(shape=self.shape, dtype=tf.float32))
+            self.tf_var=tf.Variable(0,dtype=tf.float32,validate_shape=False)
+            self.y=tf.reshape(self.tf_var,shape=self.shape)
+            self.saver=tf.train.Saver({"data":self.tf_var},max_to_keep=10000)'''
+            self.tf_file_path=self.file_path+".tf"
+            self.shape_file_path=self.file_path+".shape.npy"
+            if os.path.isfile(self.tf_file_path) and os.path.isfile(self.shape_file_path):
+                self.shape=np.load(self.shape_file_path)
+            else:
+                self.load_file()
+                writeTf(self.tf_file_path,self.file_data)
+                np.save(self.shape_file_path,self.shape)
+            reader=tf.read_file(self.tf_file_path)
+            decode=tf.decode_raw(reader, tf.float32)[3:-1]#Better way?
+            self.y=tf.Variable(tf.reshape(decode,self.shape))
+            #self.y=tf.reshape(self.tf_var,shape=self.shape)
         else:
             self.load_file()
             self.y=tf.Variable(self.file_data)
@@ -137,8 +154,8 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.labels=self.add_sublayer(ConstantLayer(x=None,folder=folder,file=label_file,convert_file=convert_file))
     def start(self,sess):
         SimpleLayer.start(self,sess)
-        if self.convert_file:
-            self.saver.restore(self.sess,os.path.abspath(self.tf_file_path))
+        #if self.convert_file:
+        #    self.saver.restore(self.sess,os.path.abspath(self.tf_file_path))
     def load_file(self):
         if self.file_data==None:
             assert(os.path.isfile(self.file)), 'Cannot find file "%s"'%self.file
@@ -298,8 +315,10 @@ class CIFARLayer(DataLayer):
         self.tf_file_path=self.file_base_path+".tf"
         self.label_file_path=self.file_base_path+".labels"
         self.shape_file_path=self.file_base_path+".shape.npy"
-        if not (os.path.isfile(self.tf_file_path+".index") and 
-                os.path.isfile(self.label_file_path+".tf.index") and os.path.isfile(self.shape_file_path)):
+        #if not (os.path.isfile(self.tf_file_path+".index") and 
+        #        os.path.isfile(self.label_file_path+".tf.index") and os.path.isfile(self.shape_file_path)):
+        if not (os.path.isfile(self.tf_file_path) and 
+                os.path.isfile(self.label_file_path+".tf") and os.path.isfile(self.shape_file_path)):
             self.convert_data()
         self.data=self.add_sublayer(ConstantLayer(
                 folder=self.folder,file=self.file_base_name,label_file=self.file_base_name+".labels",convert_file=True,normalize=True))
@@ -341,8 +360,10 @@ class CIFARLayer(DataLayer):
         data=np.moveaxis(np.array([dic['data'] for dic in dics]).reshape([50000,3,32,32]),1,3).astype(np.float32)
         labels=np.array([dic['labels'] for dic in dics]).reshape([50000])
         labels_one_hot=np.array([[label==i for i in range(10)] for label in labels],dtype=np.float32)
-        saveTf(self.tf_file_path,data)
-        saveTf(self.label_file_path+".tf",labels_one_hot)
+        writeTf(self.tf_file_path,data)
+        writeTf(self.label_file_path+".tf",labels_one_hot)
+        #saveTf(self.tf_file_path,data)
+        #saveTf(self.label_file_path+".tf",labels_one_hot)
         np.save(self.shape_file_path,[50000,32,32,3])
         np.save(self.label_file_path+".shape.npy",[50000,10])
         
