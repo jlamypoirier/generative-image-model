@@ -290,15 +290,20 @@ RandomContrast,BatchRandomContrast=make_batch_layer(name="Random_Contrast",
 #Standard datasets
 class MNISTLayer(DataLayer): 
     type="MNIST"
-    def __init__(self,folder='/tmp/tensorflow/mnist/input_data',**kwargs):
+    _def_folder="/tmp/tensorflow/mnist/input_data"
+    def __init__(self,folder=_def_folder,test=False,**kwargs):
         super().__init__(**kwargs)
         self.folder=folder
         self.data=mnist.read_data_sets(self.folder, one_hot=True)
-        self.y, self.labels=tf.py_func(lambda :self.data.train.next_batch(self.batch), [], [tf.float32,tf.float64], stateful=True)
+        if test:
+            self.y, self.labels=self.data.test.images, self.data.test.labels
+        else:
+            self.y, self.labels=tf.py_func(lambda :self.data.train.next_batch(self.batch), [], [tf.float32,tf.float64], stateful=True)
         self.y=tf.reshape(self.y, [-1,28,28,1])
         self.labels=tf.cast(self.labels,tf.float32)
     def save(self,**kwargs):
-        kwargs["folder"]=self.folder
+        if self.folder!=self._def_folder:kwargs["folder"]=self.folder
+        if self.test:kwargs["test"]=self.test
         return super().save(self,**kwargs)
 
 

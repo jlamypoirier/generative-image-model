@@ -11,18 +11,17 @@ from functools import partial
 
 ###Fixes
 #Update nnUtils
-#Solve memory issue with input pipeline
 #Rework _LayerVars
 #Rework combine ops
 #Update and add complex layers
 #Finish CIFAR-10 example
 #Ignore useless parameters on saving
+#Improve input and batching
+#Improve input pipeline
 #More tests
 
 ###Features:
 #Implement Testing Phase
-#Better input and batching
-#Input preprocessing
 #Implement "Soft Dropout"
 #Reimplement DeepDream (update nnDreamer)
 #Reimplement GAN (update nnGenerator)
@@ -130,7 +129,7 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
         super().__init__(**kwargs)
         self.cloned=_cloned         #The copied layer, if variables are shared (should be set through the copy function only)
         if self.cloned!=None:
-            assert(self.type==self.cloned["type"]), self._clonedTypeError%(self.type,self.cloned.type)
+            assert(self.type==self.cloned.type), self._clonedTypeError%(self.type,self.cloned.type)
     def copy(self,                            #Makes a copy of the graph, with or without variable sharing
              x=None,                          #Feed a new input x or use the existing one (x=None)
              sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
@@ -141,7 +140,9 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
         if x==None:
             x=self.x
         cloned=share_vars and self or None
-        layer=LayerFactory(x=x,**self.save().update(kwargs),_cloned=cloned)
+        save=self.save()
+        save.update(kwargs)
+        layer=Layer(x=x,**save,_cloned=cloned)
         if sess!=None:
             sess.add([layer])
         elif self.sess!=None:
@@ -149,6 +150,7 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
         if copy_vars and not share_vars:
             assert(layer.sess!=None and layer.sess.running), self._copyManagerError
             self.copy_vars_to(layer)
+        return layer
     def copy_vars_to(self,layer):#Copies the variables to another layer. The two layers must be identical
         assert(self.sess!=None and self.sess==layer.sess), self._copySessionError
         self.sess.run(self.copy_vars_op(layer))
@@ -197,7 +199,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
     def make_sublayers(self,kw,lst,set_y,**kwargs):
         desc=getattr(self,kw)
         if self.cloned:
-            cloned=getattr(self.cloned,getattr(self,lst))
+            cloned=getattr(self.cloned,lst)#getattr(self,lst))
             assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
         else:
             cloned=[None for _ in desc]

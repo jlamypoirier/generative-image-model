@@ -8,14 +8,16 @@ from nnLayer import *
 class Trainer:
     type="Abstract"
     _trainOpError="Training operation not defined"
+    _testError="Can't train on a tester"
     _paramError="Invalid parameter: %s"
     _sessError="No active session"
-    def __init__(self):
+    def __init__(self,test=False):
+        self.test=test           #Dummy trainer to evaluate on test data
         self.sess=None
         self.params={}           #Maps the parameter tensors to their value
         self.param_dic={}        #Holds the tensor associated to each named parameter
     def start(self,sess):
-        assert("train_op" in dir(self)), self._trainOpError
+        assert("train_op" in dir(self) or self.test), self._trainOpError
         self.sess=sess
     def stop(self):
         self.sess=None
@@ -30,6 +32,7 @@ class Trainer:
             for param in params:
                 self.params[param]=arg
     def train(self,n=1,**kwargs):
+        assert(not self.test)
         self.ensure_running()
         self.update_params(**kwargs)
         for i in range(n):
@@ -81,28 +84,29 @@ class Optimizer(Trainer):
     _optimizerTypeError="Invalid optimizer type: %s"
     _noLossError="Can't finish the trainer: no loss function given"
     _noNetworkError="Can't finish the trainer: no network given"
-    def __init__(self,network=None,loss=None,optimizer="adam",finish=None,regularize=True,dropout=True,**kwargs):
-        Trainer.__init__(self)
+    def __init__(self,network=None,loss=None,optimizer="adam",finish=None,regularize=True,dropout=True,test=False,**kwargs):
+        Trainer.__init__(self,test=test)
         self.network=network         #The trained network
         self.dropout=dropout         #Enables dropout (requires layers with dropout)
         self.regularize=regularize   #Enable or disable l2 regularization
         self._loss=loss              #The loss tensor, before regularization
         self.loss=loss
-        if optimizer=="sgd":
-            self.optimizer=_Optimizer_SGD()
-        elif optimizer=="momentum":
-            self.optimizer=_Optimizer_Momentum()
-        elif optimizer=="adam":
-            self.optimizer=_Optimizer_Adam()
-        else:
-            raise Exception(self._optimizerTypeError%optimizer)
-        self.params.update(self.optimizer.get_params())
-        self.param_dic.update(self.optimizer.get_param_dic())
-        if regularize:
-            self.l2reg=tf.placeholder(tf.float32)
-            self.params[self.l2reg]=1e-8
-            self.param_dic["l2reg"]=self.l2reg
-        self.update_params(**kwargs)
+        if not self.test:
+            if optimizer=="sgd":
+                self.optimizer=_Optimizer_SGD()
+            elif optimizer=="momentum":
+                self.optimizer=_Optimizer_Momentum()
+            elif optimizer=="adam":
+                self.optimizer=_Optimizer_Adam()
+            else:
+                raise Exception(self._optimizerTypeError%optimizer)
+            self.params.update(self.optimizer.get_params())
+            self.param_dic.update(self.optimizer.get_param_dic())
+            if regularize:
+                self.l2reg=tf.placeholder(tf.float32)
+                self.params[self.l2reg]=1e-8
+                self.param_dic["l2reg"]=self.l2reg
+            self.update_params(**kwargs)
         self.sess=None
         if finish or (finish==None and self.network!=None and self.loss!=None):
             self.finish()
@@ -115,6 +119,8 @@ class Optimizer(Trainer):
             self.network=network
         if self.network==None: 
             raise Exception(self._noNetworkError)
+        if self.test:
+            return
         self.vars=self.network.get_vars()
         if self.dropout:
             self.keep_rates=self.network.get_dropout()
@@ -142,6 +148,9 @@ class ClassifierTrainer(Optimizer):
         self.logits=logits
         self.sigmoid=sigmoid
         self.array=array
+        if "finish" not in kwargs or kwargs["finish"]==None:
+            if ("network" in kwargs and kwargs["network"]!=None) or (self.labels!=None and self.logits!=None):
+                kwargs["finish"]=True
         Optimizer.__init__(self,**kwargs)
     def finish(self,network=None,loss=None,labels=None,logits=None):
         assert(not(loss or self.loss)), self._lossError
@@ -183,15 +192,19 @@ class ClassifierTrainer(Optimizer):
             self.wrong_prediction = tf.not_equal(tf.argmax(self.y, 1), tf.argmax(self.labels, 1))
         self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))
         Optimizer.finish(self,loss=self.cross_entropy)
-    def eval_error(self,n=10,print_=True,print_loss=False):
+    def eval_error(self,n=None,print_=True,print_loss=False, info=None):
         self.ensure_running()
+        if n==None:
+            n=self.test and 1 or 10
         e=np.array([self.sess.run([self.loss,self.error_rate],feed_dict=self.params) for k in range(n)])
         loss=np.mean(e[:,0])
         error=np.mean(e[:,1])
+        if info==None:
+            info=self.test and "test" or "train"
         if print_loss:
-            print("Loss: %s"%loss)
+            print("Loss (%s): %s"%(info,loss))
         if print_:
-            print("Error rate: %s"%error)
+            print("Error rate (%s): %s"%(info,error))
         return (loss,error)
     
     
