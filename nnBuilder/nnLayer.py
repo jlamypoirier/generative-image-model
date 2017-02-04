@@ -16,12 +16,15 @@ from functools import partial
 #Update and add complex layers
 #Finish CIFAR-10 example
 #Ignore useless parameters on saving
-#Improve input and batching
-#Improve input pipeline
 #More tests
 
+###Improvements
+#Improve Testing Phase
+#Improve input and batching
+#Improve input pipeline
+
 ###Features:
-#Implement Testing Phase
+#Network list builder
 #Implement "Soft Dropout"
 #Reimplement DeepDream (update nnDreamer)
 #Reimplement GAN (update nnGenerator)

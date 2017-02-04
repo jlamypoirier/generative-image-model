@@ -293,6 +293,7 @@ class MNISTLayer(DataLayer):
     _def_folder="/tmp/tensorflow/mnist/input_data"
     def __init__(self,folder=_def_folder,test=False,**kwargs):
         super().__init__(**kwargs)
+        self.test=test
         self.folder=folder
         self.data=mnist.read_data_sets(self.folder, one_hot=True)
         if test:
@@ -309,28 +310,42 @@ class MNISTLayer(DataLayer):
 
 class CIFARLayer(DataLayer):
     type="CIFAR_10"
-    def __init__(self,folder='/tmp/cifar10_data',**kwargs):
+    url='http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
+    files_train=["data_batch_%i"%i for i in range(1,6)]
+    files_test=["test_batch"]
+    n_train=50000
+    n_test=10000
+    n_classes=10
+    sample_shape=[32,32,3]
+    def __init__(self,folder='/tmp/cifar10_data',test=False,**kwargs):
         super().__init__(**kwargs)
+        self.test=test
         self.folder=folder
-        self.url='http://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz'
         self.file_name = self.url.split('/')[-1]
         self.file_path = os.path.join(self.folder, self.file_name)
         self.file_base_name=self.file_name.split(".")[0]
-        self.file_base_path=os.path.join(self.folder,self.file_base_name)
-        self.tf_file_path=self.file_base_path+".tf"
-        self.label_file_path=self.file_base_path+".labels"
-        self.shape_file_path=self.file_base_path+".shape.npy"
+        if self.test:
+            self.file_data_path=fixDir(os.path.join(self.folder,"test"))
+        else:
+            self.file_data_path=fixDir(os.path.join(self.folder,"train"))
+        self.file_base_path=os.path.join(self.file_data_path,self.file_base_name)
+        self.label_base_path=self.file_base_path+".labels"
+        #self.tf_file_path=self.file_base_path+".tf"
+        #self.label_file_path=self.file_base_path+".labels"
+        #self.shape_file_path=self.file_base_path+".shape.npy"
         #if not (os.path.isfile(self.tf_file_path+".index") and 
         #        os.path.isfile(self.label_file_path+".tf.index") and os.path.isfile(self.shape_file_path)):
-        if not (os.path.isfile(self.tf_file_path) and 
-                os.path.isfile(self.label_file_path+".tf") and os.path.isfile(self.shape_file_path)):
+        if not (os.path.isfile(self.file_base_path+".tf") and os.path.isfile(self.file_base_path+".shape.npy") and 
+                os.path.isfile(self.label_base_path+".tf") and os.path.isfile(self.label_base_path+".shape.npy")):
             self.convert_data()
         self.data=self.add_sublayer(ConstantLayer(
-                folder=self.folder,file=self.file_base_name,label_file=self.file_base_name+".labels",convert_file=True,normalize=True))
+                folder=self.file_data_path,file=self.file_base_name,label_file=self.file_base_name+".labels",
+                convert_file=True,normalize=True))
         self.y=self.data.get()
         self.labels=self.data.labels
     def save(self,**kwargs):
         kwargs["folder"]=self.folder
+        if self.test:kwargs["test"]=self.test
         return super().save(self,**kwargs)
     def start(self,sess):
         SimpleLayer.start(self,sess)
@@ -354,7 +369,8 @@ class CIFARLayer(DataLayer):
     def convert_data(self):
         import pickle
         self.download()
-        files=["data_batch_%i"%i for i in range(1,6)]
+        files=self.test and self.files_test or self.files_train
+        n=self.test and self.n_test or self.n_train
         folder=os.path.join(self.folder,"cifar-10-batches-py")
         def unpickle(f):
             file = open(f, 'rb')
@@ -362,15 +378,16 @@ class CIFARLayer(DataLayer):
             file.close()
             return dic
         dics=[unpickle(os.path.join(folder,file)) for file in files]
-        data=np.moveaxis(np.array([dic['data'] for dic in dics]).reshape([50000,3,32,32]),1,3).astype(np.float32)
-        labels=np.array([dic['labels'] for dic in dics]).reshape([50000])
-        labels_one_hot=np.array([[label==i for i in range(10)] for label in labels],dtype=np.float32)
-        writeTf(self.tf_file_path,data)
-        writeTf(self.label_file_path+".tf",labels_one_hot)
+        data=np.moveaxis(np.array([dic['data'] for dic in dics]).reshape(
+                        [n,self.sample_shape[2]]+self.sample_shape[:2]),1,3).astype(np.float32)
+        labels=np.array([dic['labels'] for dic in dics]).reshape([n])
+        labels_one_hot=np.array([[label==i for i in range(self.n_classes)] for label in labels],dtype=np.float32)
+        writeTf(self.file_base_path+".tf",data)
+        writeTf(self.label_base_path+".tf",labels_one_hot)
         #saveTf(self.tf_file_path,data)
         #saveTf(self.label_file_path+".tf",labels_one_hot)
-        np.save(self.shape_file_path,[50000,32,32,3])
-        np.save(self.label_file_path+".shape.npy",[50000,10])
+        np.save(self.file_base_path+".shape.npy",[n]+self.sample_shape)
+        np.save(self.label_base_path+".shape.npy",[n,self.n_classes])
         
         
         
