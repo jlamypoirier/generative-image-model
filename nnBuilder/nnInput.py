@@ -238,12 +238,17 @@ class BatchIdentityLayer(DataLayer): #Broadcasts a tensor into a batch of identi
 
 class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shuffling
     type="Batch_Slice"
-    def __init__(self,**kwargs):
+    def __init__(self,thread_safe=False,**kwargs):
         super().__init__(**kwargs)
-        self.data_n=tf.shape(self.y)[0]
+        self.thread_safe=thread_safe #Allows running in multiple threads, but breaks self.last_y and and related
+        self.data_n=self.y.get_shape()[0].value#tf.shape(self.y)[0]
         self.y=tf.tile(self.y, [2]+[1]*(self.y.get_shape().ndims-1))#(safely) assumes self.batch < self.y.get_shape().values[0]
         self.batch_n=tf.Variable(-1,dtype=tf.int32) #Will be 0 on first batch
-        self.batch_update=self.batch_n.assign_add(1)
+        if self.thread_safe:
+            self.queue=tf.train.range_input_producer(np.int32(self.batch*self.data_n),shuffle=False)#Not very good
+            self.batch_update=self.batch_n.assign(self.queue.dequeue())
+        else:
+            self.batch_update=self.batch_n.assign_add(1)
         self.ndims=self.y.get_shape().ndims-1  #Excludes batch dimension
         self.begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n)]+[0]*self.ndims)
         self.begin=tf.pack([tf.mod(self.batch_update*self.batch,self.data_n)]+[0]*self.ndims)
@@ -256,10 +261,14 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
         if labels!=None:
             labels=tf.tile(labels,[2,1])
             self.label_begin_no_update=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n),0])
+            #self.label_begin=tf.pack([tf.mod(self.batch_n*self.batch,self.data_n),0])
             self.label_begin=tf.pack([tf.mod(self.batch_update*self.batch,self.data_n),0])
             self.label_size=size=[self.batch,-1]
             self.labels=tf.slice(labels, begin=self.label_begin,size=self.label_size)
             self.last_labels=tf.slice(labels, begin=self.label_begin_no_update,size=self.label_size)
+    def save(self,**kwargs):
+        if self.thread_safe:kwargs["thread_safe"]=self.thread_safe
+        return super().save(self,**kwargs)
         
         
 '''class RandomCropLayer(SimpleLayer):
@@ -277,6 +286,9 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
 #Input processing
 Whitening,BatchWhitening=make_batch_layer(name="Whitening",fun=tf.image.per_image_standardization)
 RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=lambda x,shape:tf.random_crop(x,shape),args=["shape"],shape=None)
+CentralCrop,BatchCentralCrop=make_batch_layer(name="Central_Crop",
+    fun=lambda x,shape:tf.image.resize_image_with_crop_or_pad(x, target_height=shape[0], target_width=shape[1]),
+    args=["shape"],shape=None)
 VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Random_Vertical_Flip",fun=tf.image.random_flip_up_down)
 HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Random_Horizontal_Flip",fun=tf.image.random_flip_left_right)
 RandomBrightness,BatchRandomBrightness=make_batch_layer(name="Random_Brightness",

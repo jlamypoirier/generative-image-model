@@ -16,7 +16,7 @@ from functools import partial
 #Update and add complex layers
 #Finish CIFAR-10 example
 #Ignore useless parameters on saving
-#More tests
+#More tests, debugging
 
 ###Improvements
 #Improve Testing Phase
