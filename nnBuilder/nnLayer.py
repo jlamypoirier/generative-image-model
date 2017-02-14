@@ -267,11 +267,18 @@ class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some
         return self.gather_self(fun,**kwargs)+self.sub_gather_fun(fun,**kwargs)
     def gather_self(self,fun,**kwargs):#Only the current layer
         return (fun in dir(self) and getattr(self,fun)(**kwargs) or [])
+    def _get_labels_lst(self):
+        labels=self._get_labels()
+        return labels!=None and [labels] or []
     def _get_labels(self):
+        #print(self.type)
         if "labels" in dir(self):
             if isinstance(self.labels,SimpleLayer):
                 return self.labels.get()
             return self.labels
+        sub_labels=self.simple_gather_fun("_get_labels_lst")
+        if len(sub_labels)>0:
+            return sub_labels[-1]#Picks last label, should also be last in the network
         return None
     def get_input_labels(self,recurse=True):
         if isinstance(self.x,SimpleLayer):
@@ -429,6 +436,16 @@ def _batchNormFunction(x):
     return (x-mean)/std
 BatchNormLayer=make_layer(name="Batch_Norm",fun=_batchNormFunction)
 LocalResponseNormLayer=make_layer(name="Local_Response_Norm",fun=tf.nn.local_response_normalization)
+
+'''def _reshape(x,shape):
+    x_shape=x.get_shape().as_list()
+    print(x_shape)
+    print(shape)
+    for i in range(len(shape)):
+        if shape[i]==None:
+            shape[i]=x_shape[i]
+    print(shape)
+    return tf.reshape(x,shape)'''
 ReshapeLayer=make_layer(name="Reshape",fun=tf.reshape,args=["shape"],shape=None)
 
 
@@ -505,7 +522,8 @@ class ConvLayer(WindowLayer):
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-        self.set(tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,[1,self.stride,self.stride,1], self.pad),self.b))
+        strides=[1,self.stride,self.stride,1]
+        self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,strides, self.pad),self.b)
     def get_weights(self):
         return super().get_weights()+[self.w]
     def get_biases(self):
@@ -516,6 +534,41 @@ class ConvLayer(WindowLayer):
         kwargs["input_channels"]=self._input_channels
         kwargs["rand_scale"]=self.rand_scale
         return super().save(**kwargs)
+    
+class ConvTransposeLayer(WindowLayer):
+    type="Convolution_Transpose"
+    def __init__(self,size=1,relu=True,input_channels=None,rand_scale=0.1,**kwargs):
+        if relu:
+            self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,type="Relu_Feature")
+        super().__init__(**kwargs)
+        self.size=size                       #Number of output channels
+        self.relu=relu                       #Optional relu on the output
+        self._input_channels=input_channels  #(Optional) overrides the number of input channels, needed for variable size input
+        self.rand_scale=rand_scale           #Scale for random initialization of weights and biases
+        self.input_channels=self._input_channels or self.y.get_shape()[3].value
+        self.filter_shape=[self.window,self.window,self.size,self.input_channels]
+        if self.cloned!=None:
+            self.w=self.cloned.w
+            self.b=self.cloned.b
+        else:
+            self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
+            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
+        output_1=self.y.get_shape()[1].value*self.stride-(self.pad=="VALID" and self.window-1 or 0)
+        output_2=self.y.get_shape()[2].value*self.stride-(self.pad=="VALID" and self.window-1 or 0)
+        output_shape=[self.y.get_shape()[0].value,output_1,output_2,self.size]
+        strides=[1,self.stride,self.stride,1]
+        self.y=tf.nn.bias_add(tf.nn.conv2d_transpose(self.y,self.w, output_shape,strides,self.pad),self.b)
+    def get_weights(self):
+        return super().get_weights()+[self.w]
+    def get_biases(self):
+        return super().get_biases()+[self.b]
+    def save(self,**kwargs):
+        kwargs["size"]=self.size
+        kwargs["relu"]=self.relu
+        kwargs["input_channels"]=self._input_channels
+        kwargs["rand_scale"]=self.rand_scale
+        return super().save(**kwargs)
+    
     
 class PoolLayer(WindowLayer):
     type="Pool"

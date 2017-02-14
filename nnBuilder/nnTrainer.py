@@ -112,6 +112,7 @@ class Optimizer(Trainer):
             self.finish()
     def finish(self,network=None,loss=None):
         if loss!=None:             #Use the parameters from the constructor if none given
+            self._loss=loss
             self.loss=loss
         if self.loss==None:        #Explodes if the constructor also had none given
             raise Exception(self._noLossError)
@@ -139,19 +140,18 @@ class Optimizer(Trainer):
             print(loss)
         return (loss)
 
-class ClassifierTrainer(Optimizer):
-    type="Classifier"
-    _lossError="Loss function fed to classifier, must feed labels"
-    _noLabelsError="Can't finish the trainer: no labels given"
-    def __init__(self,labels=None,logits=None,sigmoid=None,array=False,**kwargs):
+class LabeledTrainer(Optimizer):
+    type="Labeled"
+    def __init__(self,labels=None,logits=None,loss="cross_entropy",array=False,**kwargs):
         self.labels=labels
         self.logits=logits
-        self.sigmoid=sigmoid
+        self._loss_type=loss
+        self.loss_type=loss
         self.array=array
         if "finish" not in kwargs or kwargs["finish"]==None:
             if ("network" in kwargs and kwargs["network"]!=None) or (self.labels!=None and self.logits!=None):
                 kwargs["finish"]=True
-        Optimizer.__init__(self,**kwargs)
+        super().__init__(**kwargs)
     def finish(self,network=None,loss=None,labels=None,logits=None):
         assert(not(loss or self.loss)), self._lossError
         if network!=None:
@@ -161,7 +161,7 @@ class ClassifierTrainer(Optimizer):
         if labels!=None:
             self.labels=labels
         if self.labels==None:
-            self.labels=self.network.get_input_labels()
+            self.labels=self.network.get_labels()
         if self.labels==None: 
             raise Exception(self._noLabelsError)
         if isinstance(self.labels,SimpleLayer):
@@ -176,22 +176,37 @@ class ClassifierTrainer(Optimizer):
             array_dim= self.logits.get_shape().ndims-2  #logits is 2d tensor
             if array_dim>0:
                 self.logits=tf.reduce_mean(self.logits,axis=range(1,array_dim+1))
-        if self.sigmoid==None:
-            self.sigmoid=self.logits.get_shape()[-1].value==1
-        if self.sigmoid:
-            self.cross_entropy=tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(self.logits,self.labels))
+        if self.loss_type=="cross_entropy":
+            self.loss_type=self.logits.get_shape()[-1].value==1 and "sigmoid" or "softmax"
+        if self.loss_type=="sigmoid":
+            loss=tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(self.logits,self.labels))
+        elif self.loss_type=="softmax":
+            loss=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(self.logits,self.labels))
+        elif self.loss_type=="mean_squared_error":
+            diff=self.logits-self.labels
+            loss=tf.reduce_mean(diff*diff)
         else:
-            self.cross_entropy=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(self.logits,self.labels))
-        if self.sigmoid:
-            self.sigmoidLayer=SimpleSigmoid(self.logits)
+            raise Exception("Unknown loss type: %s"%self.loss_type)
+        super().finish(loss=loss)
+    
+
+class ClassifierTrainer(Optimizer):
+    type="Classifier"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+    def finish(self,**kwargs):
+        super().finish(**kwargs)
+        if self.loss_type=="sigmoid":
+            self.sigmoidLayer=SigmoidFeature(x=self.logits)
             self.y=self.sigmoidLayer.get()
             self.wrong_prediction = tf.not_equal(tf.greater(self.y, 0.5), tf.greater(self.labels, 0.5))
-        else:
+        elif self.loss_type=="softmax":
             self.softmaxLayer=SoftmaxFeature(x=self.logits)
             self.y=self.softmaxLayer.get()
             self.wrong_prediction = tf.not_equal(tf.argmax(self.y, 1), tf.argmax(self.labels, 1))
+        else:
+            raise Exception("Wrong loss type for classifier: %s"%self.loss_type)
         self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))
-        Optimizer.finish(self,loss=self.cross_entropy)
     def eval_error(self,n=None,print_=True,print_loss=False, info=None):
         self.ensure_running()
         if n==None:
@@ -206,17 +221,8 @@ class ClassifierTrainer(Optimizer):
         if print_:
             print("Error rate (%s): %s"%(info,error))
         return (loss,error)
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
+        
+
     
     
     

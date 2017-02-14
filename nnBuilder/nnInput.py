@@ -69,7 +69,7 @@ class BasicInputLayer(SimpleLayer):
             self.shape=tf.concat(0,shape)
     def save(self,**kwargs):
         kwargs["shape"]=self._shape
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
 
 
 class PlaceholderLayer(BasicInputLayer):     
@@ -106,7 +106,7 @@ class RandomLayer(BasicInputLayer):
         kwargs["rand_type"]=self.rand_type
         kwargs["scale"]=self.scale
         kwargs["mean"]=self.mean
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
     
 class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either x or the given file
     type="Constant"
@@ -170,10 +170,11 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         kwargs["file"]=self.file
         kwargs["convert_file"]=self.convert_file
         kwargs["normalize"]=self.normalize
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
 
 
-#Input Pipeline
+
+#Input Pipeline (not working)
 class PipelineLayer(SimpleLayer):
     type="Pipeline"
     _extra_args=SimpleLayer._extra_args+["min_after_dequeue","batch"]
@@ -215,10 +216,41 @@ class PipelineLayer(SimpleLayer):
         if self._capacity!=None:kwargs["capacity"]=self.capacity
         if self.make_batch and self.batch!=128:kwargs["batch"]=self.batch
         if self.shuffle and self.min_after_dequeue!=self.capacity//4:kwargs["min_after_dequeue"]=self.min_after_dequeue
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
             
 
-
+#Label Generators
+class IdentityLabelLayer(SimpleLayer):
+    type="Identity_Label"
+    def __init__(self,**kwargs):
+        super().__init__(**kwargs)
+        self.labels=self.y
+    def save(self,**kwargs):
+        return super().save(**kwargs)
+    
+class ConstantLabelLayer(SimpleLayer):
+    type="Constant_Label"
+    def __init__(self,label,**kwargs):
+        super().__init__(**kwargs)
+        self.label=np.float32(label)    #Must be numpy array
+        tile_n=[self.y.get_shape()[0].value]+[1]*self.label.ndim
+        self.labels=tf.constant(np.tile(np.expand_dims(self.label,axis=0),tile_n))
+    def save(self,**kwargs):
+        kwargs["label"]=self.label
+        return super().save(**kwargs)
+    
+class OneHotLabelLayer(ConstantLabelLayer):
+    type="One_Hot_Label"
+    def __init__(self,i,n,**kwargs):
+        self.i=i
+        self.n=n
+        label=[0]*n
+        label[i]=1
+        super().__init__(label=np.float32(label),**kwargs)
+    def save(self,**kwargs):
+        kwargs["i"]=self.i
+        kwargs["n"]=self.n
+        return SimpleLayer.save(self,**kwargs)
 
 #Batch Generators
 class DataLayer(SimpleLayer):
@@ -228,7 +260,7 @@ class DataLayer(SimpleLayer):
         self.batch=batch                #The number of elements in a batch
     def save(self,**kwargs):
         kwargs["batch"]=self.batch
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
 
 class BatchIdentityLayer(DataLayer): #Broadcasts a tensor into a batch of identical tensors
     type="Batch_Identity"
@@ -268,7 +300,7 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
             self.last_labels=tf.slice(labels, begin=self.label_begin_no_update,size=self.label_size)
     def save(self,**kwargs):
         if self.thread_safe:kwargs["thread_safe"]=self.thread_safe
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
         
         
 '''class RandomCropLayer(SimpleLayer):
@@ -310,14 +342,15 @@ class MNISTLayer(DataLayer):
         self.data=mnist.read_data_sets(self.folder, one_hot=True)
         if test:
             self.y, self.labels=self.data.test.images, self.data.test.labels
+            self.y=tf.reshape(self.y, [10000,28,28,1])
         else:
             self.y, self.labels=tf.py_func(lambda :self.data.train.next_batch(self.batch), [], [tf.float32,tf.float64], stateful=True)
-        self.y=tf.reshape(self.y, [-1,28,28,1])
+            self.y=tf.reshape(self.y, [self.batch,28,28,1])
         self.labels=tf.cast(self.labels,tf.float32)
     def save(self,**kwargs):
         if self.folder!=self._def_folder:kwargs["folder"]=self.folder
         if self.test:kwargs["test"]=self.test
-        return super().save(self,**kwargs)
+        return super().save(**kwargs)
 
 
 class CIFARLayer(DataLayer):
