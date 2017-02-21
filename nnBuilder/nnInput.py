@@ -56,16 +56,16 @@ class BasicInputLayer(SimpleLayer):
         if self.shape==None:
             pass
         elif type(self.shape) == int and self.shape<0:
-            assert(x!=None), self._noShapeError
-            self.shape=tf.shape(x)
+            assert(self.y!=None), self._noShapeError
+            self.shape=tf.shape(self.y)
         else:
             shape=self.shape
             self.var_dim=self.var_dim or None in self.shape
             for i,s in enumerate(self.shape):
                 if s!=None and s<0:
-                    assert(x!=None), self._noShapeError
-                    assert(tf.shape(x).ndims==len(shape)), _dimensionError%(tf.shape(x).ndims,len(shape))
-                    shape[i]=tf.shape(x)[i]
+                    assert(self.y!=None), self._noShapeError
+                    assert(tf.shape(self.y).ndims==len(shape)), _dimensionError%(tf.shape(self.y).ndims,len(shape))
+                    shape[i]=tf.shape(self.y)[i]
             self.shape=tf.concat(0,shape)
     def save(self,**kwargs):
         kwargs["shape"]=self._shape
@@ -87,27 +87,7 @@ class InputLayer(BasicInputLayer):
         super().__init__(**kwargs)
         self.y=tf.placeholder(dtype=tf.float32,shape=self.shape)
     
-class RandomLayer(BasicInputLayer):
-    type="Random"
-    _shapeError="Random layer must have a fixed shape"
-    def __init__(self,rand_type="normal",scale=1.,mean=0.,**kwargs):
-        super().__init__(**kwargs)
-        self.rand_type=rand_type             #normal or uniform generator
-        self.scale=scale                     #scale for the distribution (std or half-range)
-        self.mean=mean                       #mean for the distribution
-        assert(not self.var_dim), self._shapeError
-        if self.rand_type=="normal":
-            self.y=tf.random_normal(self.shape, mean=self.mean, 
-                                    stddev=self.scale,dtype=tf.float32)
-        elif self.rand_type=="uniform":
-            self.y=tf.random_uniform(self.shape,minval=self.mean-self.scale,
-                                     maxval=self.mean+self.scale,dtype=tf.float32)
-    def save(self,**kwargs):
-        kwargs["rand_type"]=self.rand_type
-        kwargs["scale"]=self.scale
-        kwargs["mean"]=self.mean
-        return super().save(**kwargs)
-    
+
 class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either x or the given file
     type="Constant"
     _noInputError="No initial value given to constant layer"
@@ -171,6 +151,57 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         kwargs["convert_file"]=self.convert_file
         kwargs["normalize"]=self.normalize
         return super().save(**kwargs)
+
+#Random layers
+class RandomLayer(BasicInputLayer):
+    type="Random"
+    _shapeError="Random layer must have a fixed shape"
+    def __init__(self,rand_type="normal",scale=1.,mean=0.,**kwargs):
+        super().__init__(shape=-1,**kwargs)
+        self.rand_type=rand_type             #normal or uniform generator
+        self.scale=scale                     #scale for the distribution (std or half-range)
+        self.mean=mean                       #mean for the distribution
+        assert(not self.var_dim), self._shapeError
+        if self.rand_type=="normal":
+            self.y=tf.random_normal(self.shape, mean=self.mean, 
+                                    stddev=self.scale,dtype=tf.float32)
+        elif self.rand_type=="uniform":
+            self.y=tf.random_uniform(self.shape,minval=self.mean-self.scale,
+                                     maxval=self.mean+self.scale,dtype=tf.float32)
+    def save(self,**kwargs):
+        kwargs["rand_type"]=self.rand_type
+        kwargs["scale"]=self.scale
+        kwargs["mean"]=self.mean
+        return super().save(**kwargs)
+
+class NoiseLayer(CombineLayer):
+    type="Noise"
+    def __init__(self,rand_type="normal",scale=1.,mean=0.,combine_op="add",**kwargs):
+        self.rand_type=rand_type             #normal or uniform generator
+        self.scale=scale                     #scale for the distribution (std or half-range)
+        self.mean=mean                       #mean for the distribution
+        self.add_sublayer_def(sublayer_type=self.SUBLAYER_COMBINE_MANAGED,type="Network")
+        self.add_sublayer_def(sublayer_type=self.SUBLAYER_COMBINE_MANAGED,type="Random",
+                              rand_type=rand_type,scale=scale,mean=mean)
+        super().__init__(combine_op=combine_op,**kwargs)
+    def save(self,**kwargs):
+        kwargs["rand_type"]=self.rand_type
+        kwargs["scale"]=self.scale
+        kwargs["mean"]=self.mean
+        return super().save(**kwargs)
+
+class SoftDropoutLayer(NoiseLayer):#Adapted NoiseLayer (no output normalization)
+    type="Soft_Dropout"
+    DROP_ON_TEST=True
+    def __init__(self,scale=.5,mean=1.,combine_op="mult",**kwargs):#Make adjustable during training?
+        super().__init__(combine_op=combine_op,scale=scale,mean=mean,**kwargs)
+        
+
+
+
+
+
+
 
 
 
@@ -321,35 +352,38 @@ RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=lambda x,shap
 CentralCrop,BatchCentralCrop=make_batch_layer(name="Central_Crop",
     fun=lambda x,shape:tf.image.resize_image_with_crop_or_pad(x, target_height=shape[0], target_width=shape[1]),
     args=["shape"],shape=None)
-VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Random_Vertical_Flip",fun=tf.image.random_flip_up_down)
-HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Random_Horizontal_Flip",fun=tf.image.random_flip_left_right)
+VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Random_Vertical_Flip",fun=tf.image.random_flip_up_down,drop_on_test=True)
+HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Random_Horizontal_Flip",
+    fun=tf.image.random_flip_left_right,drop_on_test=True)
 RandomBrightness,BatchRandomBrightness=make_batch_layer(name="Random_Brightness",
     fun=lambda x,max_delta:tf.image.random_brightness(x,max_delta=max_delta),
-    args=["max_delta"],max_delta=63)
+    args=["max_delta"],max_delta=63,drop_on_test=True)
 RandomContrast,BatchRandomContrast=make_batch_layer(name="Random_Contrast",
     fun=lambda x,lower,upper:tf.image.random_contrast(x,lower=lower,upper=upper),
-    args=["lower","upper"],lower=0.2, upper=1.8)
+    args=["lower","upper"],lower=0.2, upper=1.8,drop_on_test=True)
 
 
 #Standard datasets
 class MNISTLayer(DataLayer): 
     type="MNIST"
     _def_folder="/tmp/tensorflow/mnist/input_data"
-    def __init__(self,folder=_def_folder,test=False,**kwargs):
+    def __init__(self,folder=_def_folder,**kwargs):
         super().__init__(**kwargs)
-        self.test=test
+        #self.test=test
         self.folder=folder
         self.data=mnist.read_data_sets(self.folder, one_hot=True)
-        if test:
+        if self.test:
+            print("test")
             self.y, self.labels=self.data.test.images, self.data.test.labels
             self.y=tf.reshape(self.y, [10000,28,28,1])
         else:
+            print("train")
             self.y, self.labels=tf.py_func(lambda :self.data.train.next_batch(self.batch), [], [tf.float32,tf.float64], stateful=True)
             self.y=tf.reshape(self.y, [self.batch,28,28,1])
         self.labels=tf.cast(self.labels,tf.float32)
     def save(self,**kwargs):
         if self.folder!=self._def_folder:kwargs["folder"]=self.folder
-        if self.test:kwargs["test"]=self.test
+        #if self.test:kwargs["test"]=self.test
         return super().save(**kwargs)
 
 
@@ -362,9 +396,9 @@ class CIFARLayer(DataLayer):
     n_test=10000
     n_classes=10
     sample_shape=[32,32,3]
-    def __init__(self,folder='/tmp/cifar10_data',test=False,**kwargs):
+    def __init__(self,folder='/tmp/cifar10_data',**kwargs):
         super().__init__(**kwargs)
-        self.test=test
+        #self.test=test
         self.folder=folder
         self.file_name = self.url.split('/')[-1]
         self.file_path = os.path.join(self.folder, self.file_name)
@@ -390,7 +424,7 @@ class CIFARLayer(DataLayer):
         self.labels=self.data.labels
     def save(self,**kwargs):
         kwargs["folder"]=self.folder
-        if self.test:kwargs["test"]=self.test
+        #if self.test:kwargs["test"]=self.test
         return super().save(self,**kwargs)
     def start(self,sess):
         SimpleLayer.start(self,sess)

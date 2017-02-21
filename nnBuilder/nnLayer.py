@@ -17,6 +17,7 @@ from functools import partial
 #Finish CIFAR-10 example
 #Ignore useless parameters on saving
 #More tests, debugging
+#Fix input pipeline
 
 ###Improvements
 #Improve Testing Phase
@@ -76,7 +77,7 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
     _uncaughtArgumentWarning="Unknown argument: %s"
     _finishedError="Trying to set the output of a finished layer"
     _extra_args=[]
-    def __init__(self,x=None,**kwargs):
+    def __init__(self,x=None,test=None,drop_on_test=None,**kwargs):
         for kw in kwargs:
             if kw not in self._extra_args:
                 warnings.warn(self._uncaughtArgumentWarning%kw)
@@ -84,6 +85,8 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
         self.x=self._x                       #The input, converted to tensor-like (can be None)
         self.y=self.x                        #The output of the layer during construction (final output obtained through get)
+        self.drop_on_test=drop_on_test       #Layer is ignored if test=True (defaults to False or layer's DROP_ON_TEST variable)
+        self.test=test                       #Indicates test phase (propagates to sublayers if set, not saved)
         if isinstance(self.y,_LayerRaw):
             self.y=self.y.get()
             self._x=self._x.get()
@@ -91,7 +94,12 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
     def finish(self):
         if not self.finished:
             assert("_y" not in dir(self))    #Debug
-            self._y=self.y                   #The final output
+            if self.test and self.drop_on_test or (self.drop_on_test==None and "DROP_ON_TEST" in dir(self) and self.DROP_ON_TEST):
+                self._y=self._x
+                self.dropped=True            #Debug
+            else:
+                self._y=self.y               #The final output
+                self.dropped=False
             self.finished=True
             del self.y
     def get_in(self):
@@ -104,6 +112,8 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         self.y=y
     def save(self,**kwargs):
         kwargs["type"]=self.type
+        #if self.test!=None: kwargs["test"]=self.test
+        if self.drop_on_test!=None: kwargs["drop_on_test"]=self.drop_on_test
         return kwargs
 
 
@@ -139,11 +149,12 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
              share_vars=False,                #Enables variable sharing
              copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
              **kwargs                         #Override some other arguments (risky if copy_vars=True)
-            ):
+            ):                                #(ex. test=True)
         if x==None:
             x=self.x
         cloned=share_vars and self or None
         save=self.save()
+        save["test"]=self.test
         save.update(kwargs)
         layer=Layer(x=x,**save,_cloned=cloned)
         if sess!=None:
@@ -208,9 +219,12 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
             cloned=[None for _ in desc]
         for i,_desc in enumerate(desc):#Features implemented in the order they are given
             if type(_desc)==dict:
+                if self.test!=None:
+                    _desc=_desc.copy()
+                    _desc["test"]=self.test
                 layer=Layer(x=self.y,_cloned=cloned[i],**_desc)
             else:
-                layer=Layer(x=self.y,_cloned=cloned[i],type=_desc)
+                layer=Layer(x=self.y,_cloned=cloned[i],test=self.test,type=_desc)
             self.add_sublayer(layer,lst=lst,set_y=set_y)
     def add_sublayer_def(self,sublayer_type,inner=True,**kwargs):
         assert("x" not in dir(self)), "Sublayer definitions must be added before initializing the layer"
@@ -301,16 +315,18 @@ class SimpleLayer(_LayerVars):
 #Modify the output using a function fun, must take and return a single Tensor, and possibly some extra (serializable, named) arguments
 #Add input and/or output features to the layer
 #Add or mofidy a default argument values for a layer
-def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,out_features=None,**kwargs):
+def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,out_features=None,drop_on_test=None,**kwargs):
     assert(issubclass(BaseClass,SimpleLayer)),"Class %s is not a layer type"%BaseClass.__name__
     class LayerClass(BaseClass):
         type=name
         if args!=None:
             _extra_args=BaseClass._extra_args+args
+        if drop_on_test!=None:
+            DROP_ON_TEST=drop_on_test
         def __init__(self,**kwargs1):
             if in_features!=None:
                 for feature in in_features:
-                    if type(feature)==string:
+                    if type(feature)==str:
                         feature={"type":feature}
                     self.add_sublayer_def(sublayer_type=self.SUBLAYER_INPUT_MANAGED,**feature)
             if out_features!=None:
@@ -368,6 +384,8 @@ class SimpleCombine:#Auxiliary class to Combine (needs reworking)
         elif combine_op=="sub":
             assert(len(x)==2), self._combineLengthError%(combine_op,len(x))
             self.y=tf.sub(self.x[0],self.x[1])
+        elif combine_op=="add":
+            self.y=tf.add_n(self.x)
         elif combine_op=="mult":
             if len(x)==2:
                 self.y=tf.mul(self.x[0],self.x[1])
@@ -400,7 +418,7 @@ class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff 
     def __init__(self,combine_op="combine",combined_layers=[],**kwargs):
         super().__init__(**kwargs)
         self.combine_op=combine_op           #Type of combining: "combine" (on channel dimension), "combine_batch", "sub", "mult"
-        self.layers=layers                   #The combined layers
+        self.combined_layers=combined_layers #The combined layers
         self.make_sublayers(**self.SUBLAYER_COMBINE)
         self.make_sublayers(**self.SUBLAYER_COMBINE_MANAGED)
         assert(len(self.sublayers_combined)==0 or len(self.sublayers_combined_managed)==0),self._combineManagedError
@@ -420,6 +438,7 @@ class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff 
 ###Feature layers
 class DropoutLayer(SimpleLayer):
     type="Dropout"
+    DROP_ON_TEST=True
     def __init__(self,default_rate=1.0,**kwargs):
         super().__init__(**kwargs)
         self.default_rate=default_rate

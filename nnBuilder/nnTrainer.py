@@ -190,7 +190,7 @@ class LabeledTrainer(Optimizer):
         super().finish(loss=loss)
     
 
-class ClassifierTrainer(Optimizer):
+class ClassifierTrainer(LabeledTrainer):
     type="Classifier"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
@@ -207,7 +207,7 @@ class ClassifierTrainer(Optimizer):
         else:
             raise Exception("Wrong loss type for classifier: %s"%self.loss_type)
         self.error_rate = tf.reduce_mean(tf.cast(self.wrong_prediction, tf.float32))
-    def eval_error(self,n=None,print_=True,print_loss=False, info=None):
+    def eval_error(self,n=None,show=True,show_loss=False, info=None):
         self.ensure_running()
         if n==None:
             n=self.test and 1 or 10
@@ -216,9 +216,9 @@ class ClassifierTrainer(Optimizer):
         error=np.mean(e[:,1])
         if info==None:
             info=self.test and "test" or "train"
-        if print_loss:
+        if show_loss:
             print("Loss (%s): %s"%(info,loss))
-        if print_:
+        if show:
             print("Error rate (%s): %s"%(info,error))
         return (loss,error)
         
