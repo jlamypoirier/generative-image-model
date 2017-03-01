@@ -143,6 +143,10 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
         self.cloned=_cloned         #The copied layer, if variables are shared (should be set through the copy function only)
         if self.cloned!=None:
             assert(self.type==self.cloned.type), self._clonedTypeError%(self.type,self.cloned.type)
+    def export(self):#Attempt, export the definition with reference to copied layers
+        sav=self.save()
+        sav["_cloned"]=self
+        return sav
     def copy(self,                            #Makes a copy of the graph, with or without variable sharing
              x=None,                          #Feed a new input x or use the existing one (x=None)
              sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
@@ -203,6 +207,17 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         self.make_sublayers(**self.SUBLAYER_INPUT_MANAGED)
         self.make_sublayers(**self.SUBLAYER_PROPER)
         self.make_sublayers(**self.SUBLAYER_PROPER_MANAGED)
+    def _export(self,sav):
+        for type in self.sublayer_types:
+            if type["kw"] in sav:
+                sublayers=getattr(self,type["lst"])
+                exp_sublayers=sav[type["kw"]]
+                for i,sublayer in enumerate(sublayers):
+                    exp_sublayers[i]["_cloned"]=sublayer
+                    sublayer._export(exp_sublayers[i])
+        return sav
+    def export(self):
+        return self._export(super().export())
     def save(self,**kwargs):
         for type in self.sublayer_types:
             if not ("managed" in type and type["managed"]):
@@ -214,7 +229,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         desc=getattr(self,kw)
         if self.cloned:
             cloned=getattr(self.cloned,lst)#getattr(self,lst))
-            assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
+            #assert(len(desc)<=len(cloned)) #Allow removing some features, but only the last ones
         else:
             cloned=[None for _ in desc]
         for i,_desc in enumerate(desc):#Features implemented in the order they are given
@@ -222,7 +237,9 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
                 if self.test!=None:
                     _desc=_desc.copy()
                     _desc["test"]=self.test
-                layer=Layer(x=self.y,_cloned=cloned[i],**_desc)
+                    if "_cloned" not in _desc:
+                        _desc["_cloned"]=cloned[i]
+                layer=Layer(x=self.y,**_desc)
             else:
                 layer=Layer(x=self.y,_cloned=cloned[i],test=self.test,type=_desc)
             self.add_sublayer(layer,lst=lst,set_y=set_y)
@@ -512,15 +529,18 @@ SigmoidLayer=make_layer(name="Sigmoid",out_features=["Sigmoid_Feature"],BaseClas
 ###Convolution and pooling
 class WindowLayer(SimpleLayer): #Common elements of convolution and pooling (abstract class)
     type="Abstract"
-    def __init__(self,pad="VALID",window=3,stride=1,**kwargs):
+    def __init__(self,pad="VALID",window=3,stride=1,input_stride=1,**kwargs):
         super().__init__(**kwargs)
         self.pad=pad                         #Type of padding used
         self.window=window                   #Size of the input window
         self.stride=stride                   #Stride distance of the input window
+        self.input_stride=input_stride       #Input stride
+        assert(self.stride==1 or self.input_stride==1)
     def save(self,**kwargs):
         kwargs["pad"]=self.pad
         kwargs["window"]=self.window
         kwargs["stride"]=self.stride
+        kwargs["input_stride"]=self.input_stride
         return super().save(**kwargs)
         
 class ConvLayer(WindowLayer):
@@ -541,8 +561,11 @@ class ConvLayer(WindowLayer):
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-        strides=[1,self.stride,self.stride,1]
-        self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,self.w,strides, self.pad),self.b)
+        if self.input_stride!=1:
+            self.y=tf.nn.bias_add(tf.nn.atrous_conv2d(self.y,filters=self.w,rate=self.input_stride,padding=self.pad),self.b)
+        else:
+            strides=[1,self.stride,self.stride,1]
+            self.y=tf.nn.bias_add(tf.nn.conv2d(self.y,filter=self.w,strides=strides, padding=self.pad),self.b)
     def get_weights(self):
         return super().get_weights()+[self.w]
     def get_biases(self):
@@ -592,7 +615,7 @@ class ConvTransposeLayer(WindowLayer):
 class PoolLayer(WindowLayer):
     type="Pool"
     _poolTypeError="Invlid pooling type: %s"
-    def __init__(self,pool_type="max",stride=2,**kwargs):
+    def __init__(self,pool_type="MAX",stride=2,**kwargs):
         super().__init__(stride=stride,**kwargs)
         self.pool_type=pool_type             #avg or max pooling 
         self.ksize=[1, self.window, self.window, 1]
@@ -610,7 +633,6 @@ class PoolLayer(WindowLayer):
         return super().save(**kwargs)
 
 
-    
 
 
     

@@ -175,7 +175,7 @@ class LabeledTrainer(Optimizer):
         if self.array: #Fixes the dimension of the logits when the classifier results in an array (Equiv to avg pooling layer)
             array_dim= self.logits.get_shape().ndims-2  #logits is 2d tensor
             if array_dim>0:
-                self.logits=tf.reduce_mean(self.logits,axis=range(1,array_dim+1))
+                self.logits=tf.reduce_mean(self.logits,axis=np.array(range(1,array_dim+1)))
         if self.loss_type=="cross_entropy":
             self.loss_type=self.logits.get_shape()[-1].value==1 and "sigmoid" or "softmax"
         if self.loss_type=="sigmoid":

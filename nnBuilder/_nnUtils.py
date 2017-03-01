@@ -12,6 +12,19 @@ def defaultinDict(dic,entry,default=None):
         return dic[entry]
     return default
 
+def itercopy(x):#Copies lists and dictionaries but not objects
+    if type(x)==list:
+        y=x.copy()
+        for i in range(len(y)):
+            y[i]=itercopy(y[i])
+    elif type(x)==dict:
+        y=x.copy()
+        for k in y:
+            y[k]=itercopy(y[k])
+    else:
+        y=x
+    return y
+
 def fixDir(dir_):
     if not os.path.exists(dir_):
         os.makedirs(dir_)
