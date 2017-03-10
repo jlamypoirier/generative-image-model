@@ -13,9 +13,14 @@ class Trainer:
     _sessError="No active session"
     def __init__(self,test=False):
         self.test=test           #Dummy trainer to evaluate on test data
-        self.sess=None
         self.params={}           #Maps the parameter tensors to their value
         self.param_dic={}        #Holds the tensor associated to each named parameter
+        self.sess=None
+    def finish(self):
+        self._finish()
+        SessManager.register(self)
+    def _finish(self):
+        return
     def start(self,sess):
         assert("train_op" in dir(self) or self.test), self._trainOpError
         self.sess=sess
@@ -110,7 +115,7 @@ class Optimizer(Trainer):
         self.sess=None
         if finish or (finish==None and self.network!=None and self.loss!=None):
             self.finish()
-    def finish(self,network=None,loss=None):
+    def _finish(self,network=None,loss=None):
         if loss!=None:             #Use the parameters from the constructor if none given
             self._loss=loss
             self.loss=loss
@@ -152,7 +157,7 @@ class LabeledTrainer(Optimizer):
             if ("network" in kwargs and kwargs["network"]!=None) or (self.labels!=None and self.logits!=None):
                 kwargs["finish"]=True
         super().__init__(**kwargs)
-    def finish(self,network=None,loss=None,labels=None,logits=None):
+    def _finish(self,network=None,loss=None,labels=None,logits=None):
         assert(not(loss or self.loss)), self._lossError
         if network!=None:
             self.network=network
@@ -183,19 +188,21 @@ class LabeledTrainer(Optimizer):
         elif self.loss_type=="softmax":
             loss=tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(self.logits,self.labels))
         elif self.loss_type=="mean_squared_error":
-            diff=self.logits-self.labels
-            loss=tf.reduce_mean(diff*diff)
+            loss=tf.reduce_mean(tf.square(self.logits-self.labels))
+        elif self.loss_type=="network":
+            assert("loss" in dir(self.network))
+            loss=self.network.loss
         else:
             raise Exception("Unknown loss type: %s"%self.loss_type)
-        super().finish(loss=loss)
+        super()._finish(loss=loss)
     
 
 class ClassifierTrainer(LabeledTrainer):
     type="Classifier"
     def __init__(self,**kwargs):
         super().__init__(**kwargs)
-    def finish(self,**kwargs):
-        super().finish(**kwargs)
+    def _finish(self,**kwargs):
+        super()._finish(**kwargs)
         if self.loss_type=="sigmoid":
             self.sigmoidLayer=SigmoidFeature(x=self.logits)
             self.y=self.sigmoidLayer.get()

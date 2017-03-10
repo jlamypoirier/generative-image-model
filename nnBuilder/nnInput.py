@@ -64,9 +64,13 @@ class BasicInputLayer(SimpleLayer):
             for i,s in enumerate(self.shape):
                 if s!=None and s<0:
                     assert(self.y!=None), self._noShapeError
-                    assert(tf.shape(self.y).ndims==len(shape)), _dimensionError%(tf.shape(self.y).ndims,len(shape))
-                    shape[i]=tf.shape(self.y)[i]
-            self.shape=tf.concat(0,shape)
+                    #assert(tf.shape(self.y).ndims==len(shape)), _dimensionError%(tf.shape(self.y).ndims,len(shape))
+                    #shape[i]=tf.shape(self.y)[i]
+                    tf_shape=self.y.get_shape().as_list()
+                    assert(len(tf_shape)==len(shape)), _dimensionError%(tf.shape(self.y).ndims,len(shape))
+                    shape[i]=tf_shape[i]
+            #print(shape)
+            #self.shape=tf.concat(0,shape)
     def save(self,**kwargs):
         kwargs["shape"]=self._shape
         return super().save(**kwargs)
@@ -283,6 +287,18 @@ class OneHotLabelLayer(ConstantLabelLayer):
         kwargs["n"]=self.n
         return SimpleLayer.save(self,**kwargs)
 
+class LabelLayer(SimpleLayer): #A layer acting on the labels
+    type="Label"
+    def __init__(self,layer,**kwargs):
+        super().__init__(**kwargs)
+        self.layer_def=layer
+        print(self.get_labels())
+        self.label_layer=Layer(x=self.get_labels(),**self.layer_def)
+        self.labels=self.label_layer.get()
+    def save(self,**kwargs):
+        kwargs["layer"]=self.layer_def
+        return super().save(**kwargs)
+
 #Batch Generators
 class DataLayer(SimpleLayer):
     type="Abstract"
@@ -349,9 +365,9 @@ class BatchSliceLayer(DataLayer): #Slices a tensor into batches without shufflin
 #Input processing
 Whitening,BatchWhitening=make_batch_layer(name="Whitening",fun=tf.image.per_image_standardization)
 RandomCrop,BatchRandomCrop=make_batch_layer(name="Random_Crop",fun=lambda x,shape:tf.random_crop(x,shape),args=["shape"],shape=None)
-CentralCrop,BatchCentralCrop=make_batch_layer(name="Central_Crop",
+'''CentralCrop,BatchCentralCrop=make_batch_layer(name="Central_Crop",
     fun=lambda x,shape:tf.image.resize_image_with_crop_or_pad(x, target_height=shape[0], target_width=shape[1]),
-    args=["shape"],shape=None)
+    args=["shape"],shape=None)'''
 VerticalRandomFlip,BatchVerticalRandomFlip=make_batch_layer(name="Random_Vertical_Flip",fun=tf.image.random_flip_up_down,drop_on_test=True)
 HorizontalRandomFlip,BatchHorizontalRandomFlip=make_batch_layer(name="Random_Horizontal_Flip",
     fun=tf.image.random_flip_left_right,drop_on_test=True)
@@ -361,6 +377,30 @@ RandomBrightness,BatchRandomBrightness=make_batch_layer(name="Random_Brightness"
 RandomContrast,BatchRandomContrast=make_batch_layer(name="Random_Contrast",
     fun=lambda x,lower,upper:tf.image.random_contrast(x,lower=lower,upper=upper),
     args=["lower","upper"],lower=0.2, upper=1.8,drop_on_test=True)
+
+
+
+class CentralCrop(SimpleLayer): #Broadcasts a tensor into a batch of identical tensors
+    type="Central_Crop"
+    def __init__(self,shape,**kwargs):
+        super().__init__(**kwargs)
+        self.shape=shape
+        y_shape=self.y.get_shape().as_list()
+        if len(y_shape)==3:
+            begin=[(y_shape[0]-self.shape[0])//2,(y_shape[1]-self.shape[1])//2,0]
+            size=shape+[y_shape[2]]
+        else:
+            begin=[0,(y_shape[1]-self.shape[0])//2,(y_shape[2]-self.shape[1])//2,0]
+            size=[y_shape[0]]+shape+[y_shape[3]]
+        self.y=tf.slice(self.y, begin, size)
+    def save(self,**kwargs):
+        kwargs["shape"]=self.shape
+        return super().save(**kwargs)
+
+
+
+
+
 
 
 #Standard datasets

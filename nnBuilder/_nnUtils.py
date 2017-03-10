@@ -51,6 +51,8 @@ def plot3d(img=None,cmap='terrain',reg=10):
 def stats(img):
     return (img.min(),img.max(),img.mean(),img.std())
 
+def composite(imgs):
+    return np.concatenate([np.concatenate([img for img in _imgs],axis=1) for _imgs in imgs],axis=0)
 
 def convertData(File):
     print("Converting file %s"%File)

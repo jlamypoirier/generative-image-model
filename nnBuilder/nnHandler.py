@@ -1,45 +1,35 @@
 import numpy as np
 import tensorflow as tf
 import os, gc
-from nnLayer import *
+import warnings
+#from nnLayer import *
+import nnLayer
 
-#Handles the saving and loading the variables
-class NetworkSaver:
-    def __init__(self,network):
-        self.network=network                 #Any Layer
-        self.save_dict={}
-        self.vars=network.get_vars()
-        for i,var in enumerate(self.vars):
-            self.save_dict["var_%i"%i]=var
-        self.saver = tf.train.Saver(self.save_dict,max_to_keep=10000)
-        self.reset_op=tf.variables_initializer(self.vars)
-        self.sess=None
-    def save(self,folder="",file=None,safe=True):
-        assert(self.sess!=None)
-        if folder!="":
-            fixDir(folder)
-        File=os.path.join(folder,file or "vars.ckpt")
-        if safe:
-            assert(not os.path.isfile(File))
-        print(File)
-        return self.saver.save(self.sess,os.path.abspath(File),write_meta_graph=False)
-    def start(self,sess):
-        self.sess=sess
-    def stop(self):
-        self.sess=None
-    def load(self,folder):
-        assert(self.sess!=None)
-        return self.saver.restore(self.sess,folder+"/vars.ckpt")
-    def init(self):
-        self.sess.run(self.reset_op)
 
 #Handles the session stuff
 class SessManager:
-    def __init__(self,*args):
+    reg=[]
+    default=None
+    @staticmethod
+    def register(networks):
+        if type(networks)==list:
+            SessManager.reg=SessManager.reg+networks
+        else:
+            SessManager.reg.append(networks)
+        if SessManager.default!=None:
+            SessManager.default.add(networks)
+    def __init__(self,default=True,start=True,*args):
         self.running=False
         self.networks=[]
+        if default:
+            if SessManager.default!=None:
+                warnings.warn("Overwriting default session manager")
+            SessManager.default=self
+            self.add(SessManager.reg)
         self.add(*args)  #The managed networks or lists of networks, a set of layers or anything with start and stop functions
         self.coord = tf.train.Coordinator()
+        if start:
+            self.start()
     def add(self,*args):
         #assert(not self.running)
         for networks in args:
@@ -51,7 +41,7 @@ class SessManager:
                     network.start(self)
     def start(self):
         assert(not self.running)
-        print("Starting new session")
+        #print("Starting new session")
         config = tf.ConfigProto()
         config.gpu_options.allow_growth=True
         #config.gpu_options.per_process_gpu_memory_fraction=0.
@@ -69,7 +59,7 @@ class SessManager:
                 if isinstance(fetch,SimpleLayer):
                     fetches[i]=fetch.get()
         except:
-            if isinstance(fetches,SimpleLayer):
+            if isinstance(fetches,nnLayer.SimpleLayer):
                 fetches=fetches.get()
         return self.sess.run(fetches,*args,**kwargs)
     def stop(self):
@@ -95,3 +85,37 @@ class SessManager:
         self.stop()
         tf.reset_default_graph()
         gc.collect()
+
+
+
+#Handles the saving and loading the variables
+class NetworkSaver:
+    def __init__(self,network):
+        self.network=network                 #Any Layer
+        self.save_dict={}
+        self.vars=network.get_vars()
+        for i,var in enumerate(self.vars):
+            self.save_dict["var_%i"%i]=var
+        self.saver = tf.train.Saver(self.save_dict,max_to_keep=10000)
+        self.reset_op=tf.variables_initializer(self.vars)
+        self.sess=None
+        SessManager.register(self)
+    def save(self,folder="",file=None,safe=True):
+        assert(self.sess!=None)
+        if folder!="":
+            fixDir(folder)
+        File=os.path.join(folder,file or "vars.ckpt")
+        if safe:
+            assert(not os.path.isfile(File))
+        print(File)
+        return self.saver.save(self.sess,os.path.abspath(File),write_meta_graph=False)
+    def start(self,sess):
+        self.sess=sess
+    def stop(self):
+        self.sess=None
+    def load(self,folder):
+        assert(self.sess!=None)
+        return self.saver.restore(self.sess,folder+"/vars.ckpt")
+    def init(self):
+        self.sess.run(self.reset_op)
+

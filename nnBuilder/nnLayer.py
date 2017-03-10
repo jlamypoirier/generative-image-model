@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import warnings
 from functools import partial
+from nnHandler import *
 #import os
 #from dataProducer import *
 
@@ -82,8 +83,8 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
             if kw not in self._extra_args:
                 warnings.warn(self._uncaughtArgumentWarning%kw)
         self.type=self.__class__.type        #The type of the layer (user-friendly class name)
-        self._x=x                            #The input for the layer (can be a Layer, a Tensor, or a numpy array)
-        self.x=self._x                       #The input, converted to tensor-like (can be None)
+        self._x=x                            #The input, converted to tensor-like (can be None)
+        self.x=self._x                       #The input for the layer (can be a Layer, a Tensor, or a numpy array)
         self.y=self.x                        #The output of the layer during construction (final output obtained through get)
         self.drop_on_test=drop_on_test       #Layer is ignored if test=True (defaults to False or layer's DROP_ON_TEST variable)
         self.test=test                       #Indicates test phase (propagates to sublayers if set, not saved)
@@ -93,15 +94,18 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         self.finished=False
     def finish(self):
         if not self.finished:
-            assert("_y" not in dir(self))    #Debug
-            if self.test and self.drop_on_test or (self.drop_on_test==None and "DROP_ON_TEST" in dir(self) and self.DROP_ON_TEST):
-                self._y=self._x
-                self.dropped=True            #Debug
-            else:
-                self._y=self.y               #The final output
-                self.dropped=False
-            self.finished=True
-            del self.y
+            self._finish()
+            SessManager.register(self)#_LayerInstance?
+    def _finish(self):
+        assert("_y" not in dir(self))    #Debug
+        if self.test and self.drop_on_test or (self.drop_on_test==None and "DROP_ON_TEST" in dir(self) and self.DROP_ON_TEST):
+            self._y=self._x
+            self.dropped=True            #Debug
+        else:
+            self._y=self.y               #The final output
+            self.dropped=False
+        self.finished=True
+        del self.y
     def get_in(self):
         return self.x
     def get(self):                           #Garanteed to be the final output
@@ -150,7 +154,7 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
     def copy(self,                            #Makes a copy of the graph, with or without variable sharing
              x=None,                          #Feed a new input x or use the existing one (x=None)
              sess=None,                       #Specify a session manager for the new layer, uses the copied layer's one if None
-             share_vars=False,                #Enables variable sharing
+             share_vars=True,                #Enables variable sharing
              copy_vars=False,                 #Copy the variable values (requires a session manager with an active session)
              **kwargs                         #Override some other arguments (risky if copy_vars=True)
             ):                                #(ex. test=True)
@@ -234,12 +238,18 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
             cloned=[None for _ in desc]
         for i,_desc in enumerate(desc):#Features implemented in the order they are given
             if type(_desc)==dict:
+                _desc=_desc.copy()
                 if self.test!=None:
-                    _desc=_desc.copy()
                     _desc["test"]=self.test
-                    if "_cloned" not in _desc:
-                        _desc["_cloned"]=cloned[i]
-                layer=Layer(x=self.y,**_desc)
+                _cloned=_desc.pop("_cloned",cloned[i])
+                x=_desc.pop("x",self.y)
+                if type(x)==str:
+                    x=getattr(self,x)
+                attr=_desc.pop("attr", None)
+                set_y=_desc.pop("set_y", set_y)
+                layer=Layer(x=x,_cloned=_cloned,**_desc)
+                if attr!=None:
+                    setattr(self,attr,layer)
             else:
                 layer=Layer(x=self.y,_cloned=cloned[i],test=self.test,type=_desc)
             self.add_sublayer(layer,lst=lst,set_y=set_y)
@@ -268,13 +278,12 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
     def stop(self):
         super().stop()
         for sublayer in self.sublayers: sublayer.stop() 
-    def finish(self):
-        if not self.finished:
-            self.make_sublayers(**self.SUBLAYER_OUTPUT_MANAGED)
-            self.make_sublayers(**self.SUBLAYER_OUTPUT)
-            for sublayer in self.sublayers:
-                sublayer.finish()
-            super().finish()
+    def _finish(self):
+        self.make_sublayers(**self.SUBLAYER_OUTPUT_MANAGED)
+        self.make_sublayers(**self.SUBLAYER_OUTPUT)
+        for sublayer in self.sublayers:
+            sublayer.finish()
+        super()._finish()
             
             
             
@@ -595,9 +604,15 @@ class ConvTransposeLayer(WindowLayer):
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
             self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-        output_1=self.y.get_shape()[1].value*self.stride-(self.pad=="VALID" and self.window-1 or 0)
-        output_2=self.y.get_shape()[2].value*self.stride-(self.pad=="VALID" and self.window-1 or 0)
-        output_shape=[self.y.get_shape()[0].value,output_1,output_2,self.size]
+        if None in self.y.get_shape().as_list():
+            output_0=tf.shape(self.y)[0]
+            output_1=tf.shape(self.y)[1]*self.stride+(self.pad=="VALID" and self.window-1 or 0)
+            output_2=tf.shape(self.y)[2]*self.stride+(self.pad=="VALID" and self.window-1 or 0)
+        else:
+            output_0=self.y.get_shape()[0].value
+            output_1=self.y.get_shape()[1].value*self.stride+(self.pad=="VALID" and self.window-1 or 0)
+            output_2=self.y.get_shape()[2].value*self.stride+(self.pad=="VALID" and self.window-1 or 0)
+        output_shape=[output_0,output_1,output_2,self.size]
         strides=[1,self.stride,self.stride,1]
         self.y=tf.nn.bias_add(tf.nn.conv2d_transpose(self.y,self.w, output_shape,strides,self.pad),self.b)
     def get_weights(self):
