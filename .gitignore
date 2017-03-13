@@ -1,7 +1,4 @@
 *.pyc
-*.pyc
-examples/.ipynb_checkpoints/CIFAR-checkpoint.ipynb
-examples/.ipynb_checkpoints/MNIST-checkpoint.ipynb
-examples/.ipynb_checkpoints/MNIST-checkpoint.ipynb
-examples/.ipynb_checkpoints/CIFAR-Pipeline-Test-checkpoint.ipynb
-examples/.ipynb_checkpoints/CIFAR-Long-Train-checkpoint.ipynb
+*-checkpoint.ipynb
+*.npy
+*.tf
