@@ -103,7 +103,7 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
         #                                     (Tensorflow still wastes memory)
         self.normalize=kwargs.pop("normalize",False)
         self.file_data=None
-        self.file_path=os.path.join(folder,file)
+        self.file_path=os.path.join(self.folder,self.file)
     def call(self):
         super().call()
         if self.convert_file:
@@ -136,7 +136,7 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.y=tf.Variable(self.file_data)
         self.file_data=None #Cleanup
         if self.label_file:
-            self.labels=self.add_sublayer(ConstantLayer(x=None,folder=folder,file=label_file,convert_file=convert_file))
+            self.labels=self.add_sublayer(ConstantLayer(x=None,folder=self.folder,file=self.label_file,convert_file=self.convert_file))
     def load_file(self):
         if self.file_data==None:
             assert(os.path.isfile(self.file)), 'Cannot find file "%s"'%self.file
@@ -152,6 +152,8 @@ class RandomLayer(BasicInputLayer):
     type="Random"
     _shapeError="Random layer must have a fixed shape"
     def init(self,kwargs):
+        if "shape" not in kwargs:
+            kwargs["shape"]=-1
         super().init(kwargs)
         self.rand_type=kwargs.pop("rand_type","normal") #normal or uniform generator
         self.scale=kwargs.pop("scale",1.)               #scale for the distribution (std or half-range)
@@ -177,7 +179,7 @@ class NoiseLayer(CombineLayer):
         self.mean=kwargs.pop("mean",0.)                 #mean for the distribution
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_COMBINE_MANAGED,type="Network")
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_COMBINE_MANAGED,type="Random",
-                              rand_type=rand_type,scale=scale,mean=mean)
+                              rand_type=self.rand_type,scale=self.scale,mean=self.mean)
 
 class SoftDropoutLayer(NoiseLayer):#Adapted NoiseLayer (no output normalization)
     type="Soft_Dropout"#GaussianDropout
@@ -355,7 +357,7 @@ class CentralCrop(SimpleLayer): #Broadcasts a tensor into a batch of identical t
             size=shape+[y_shape[2]]
         else:
             begin=[0,(y_shape[1]-self.shape[0])//2,(y_shape[2]-self.shape[1])//2,0]
-            size=[y_shape[0]]+shape+[y_shape[3]]
+            size=[y_shape[0]]+self.shape+[y_shape[3]]
         self.y=tf.slice(self.y, begin, size)
 
 #Standard datasets

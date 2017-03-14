@@ -95,6 +95,8 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         else:
             self.init(kwargs)
         for kw in kwargs:
+            #print(self.type)
+            #assert(False)
             warnings.warn(self._uncaughtArgumentWarning%kw)
         self.y=self.x
         self.dropped=self.test and self.drop_on_test or (self.drop_on_test==None and "DROP_ON_TEST" in dir(self) and self.DROP_ON_TEST)
@@ -131,8 +133,8 @@ class _LayerInstance(_LayerRaw):#Session management (use as base class for saver
         super().init(kwargs)
         self.sess=None
     def start(self,sess):
-        if self.sess!=None:
-            warnings.warn("Layer is already running")
+        #if self.sess!=None:
+        #    warnings.warn("Layer is already running")
         self.sess=sess       #Should be a SessManager
         self._start()
     def register(self):
@@ -313,8 +315,8 @@ class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some
             return sub_labels[-1]#Picks last label, should also be last in the network
         return None
     def get_input_labels(self,recurse=True):
-        if isinstance(self.x,SimpleLayer):
-            return self.x.get_labels(recurse=recurse)
+        if isinstance(self.input,SimpleLayer):
+            return self.input.get_labels(recurse=recurse)
         return None
     def get_labels(self,recurse=True):
         labels=self._get_labels()
@@ -428,7 +430,7 @@ class CombineLayer(SimpleLayer): #Combines layers in a parallel way (most stuff 
     SUBLAYER_COMBINE_MANAGED=dict(kw="combined_layers_managed",attr="sublayers_combined_managed",set_y=False,managed=True,reverse=False)
     sublayer_types=_LayerTree.sublayer_types+[SUBLAYER_COMBINE,SUBLAYER_COMBINE_MANAGED]
     _combineManagedError="A combine layer should not combine both managed and unmanaged layers"
-    def init(self,combine_op="combine",combined_layers=[],**kwargs):
+    def init(self,kwargs):
         super().init(kwargs)
         self.combine_op=kwargs.pop("combine_op","combine")#Type of combining: "combine" (on channel dimension), 
                                                        #"combine_batch", "sub", "mult"
@@ -455,9 +457,9 @@ class DropoutLayer(SimpleLayer):
     def init(self,kwargs):
         super().init(kwargs)
         self.default_rate=kwargs.pop("default_rate",1.0)
+        self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
     def call(self):
         super().call()
-        self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
         self.y=tf.nn.dropout(self.y,self.tf_keep_rate)
     def get_dropout(self):
         return super().get_dropout()+[self.tf_keep_rate]
@@ -571,18 +573,18 @@ class ConvTransposeLayer(WindowLayer):
         self.relu=kwargs.pop("relu",True)    #Optional relu on the output
         self._input_channels=kwargs.pop("input_channels",None) #(Optional) overrides the number of input channels, 
                                                                #needed for variable size input
+        if self.relu:
+            self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,type="Relu_Feature")
+    def call(self):
+        super().call()
         self.input_channels=self._input_channels or self.y.get_shape()[3].value
         self.filter_shape=[self.window,self.window,self.size,self.input_channels]
-        if relu:
-            self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,type="Relu_Feature")
         if self.cloned!=None:
             self.w=self.cloned.w
             self.b=self.cloned.b
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-    def call(self):
-        super().call()
+            self.b=tf.Variable(tf.random_normal([self.size], self.rand_scale, self.rand_scale),name='Biases')
         if None in self.y.get_shape().as_list():
             output_0=tf.shape(self.y)[0]
             output_1=tf.shape(self.y)[1]*self.stride+(self.pad=="VALID" and self.window-1 or 0)
