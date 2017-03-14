@@ -30,7 +30,7 @@ class SessManager:
         self.coord = tf.train.Coordinator()
         if start:
             self.start()
-    def add(self,*args):
+    def add(self,*args):#Does not initialize variables or start threads if already started (needs fix)
         #assert(not self.running)
         for networks in args:
             if type(networks)!=list:

@@ -16,9 +16,10 @@ import sys
 
 class Autoencoder(SimpleLayer):
     type="Autoencoder"
-    def __init__(self,encoder,decoder,**kwargs):
-        self.encoder_def=encoder
-        self.decoder_def=decoder
+    def init(self,kwargs):
+        super().init(kwargs)
+        self.encoder_def=kwargs.pop("encoder")
+        self.decoder_def=kwargs.pop("decoder")
         if type(self.encoder_def)==list:
             self.encoder_def=dict(type="Network",layers=self.encoder_def)
         if type(self.decoder_def)==list:
@@ -26,8 +27,9 @@ class Autoencoder(SimpleLayer):
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,type="Identity_Label")
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="encoder",**self.encoder_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="decoder",**self.decoder_def)
-        super().__init__(**kwargs)
-        self.in_shape=self._x.get_shape().as_list()
+    def call(self):
+        super().call()
+        self.in_shape=self.encoder.x.get_shape().as_list()
         self.in_shape[0]=None
         self.shape=self.encoder.get().get_shape().as_list()
         self.shape[0]=None
@@ -55,42 +57,35 @@ class Autoencoder(SimpleLayer):
         assert(self.sess!=None)
         self.make_decoder_full()
         return self.sess.run(self.decoder_full,feed_dict={self.encoder_input:x})
-    def save(self,**kwargs):
-        kwargs["encoder"]=self.encoder_def
-        kwargs["decoder"]=self.decoder_def
-        return super().save(**kwargs)
 
 class _VariationalAutoencoderInput(SimpleLayer):
     type="Variational_Autoencoder_Input"
-    def __init__(self,mean,log_std=None,**kwargs):
-        self.mean_def=mean
-        self.log_std_def=log_std
-        if self.log_std_def==None:
-            self.log_std_def=self.mean_def
+    def init(self,kwargs):
+        super().init(kwargs)
+        self.mean_def=kwargs.pop("mean")
+        self.log_std_def=kwargs.pop("log_std")
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="log_std",set_y=False,**self.log_std_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="mean",set_y=False,**self.mean_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,type="Random",set_y=True,x="mean")
-        super().__init__(**kwargs)
+    def call(self):
+        super().call()
         self.y=self.mean.get()+self.y*tf.exp(self.log_std.get())
-    def save(self,**kwargs):
-        kwargs["mean"]=self.mean_def
-        kwargs["log_std"]=self.log_std_def
-        return super().save(**kwargs)
     
     
 
 
 class VariationalAutoencoder(SimpleLayer):
     type="Variational_Autoencoder"
-    def __init__(self,encoder,decoder,mean,log_std=None,**kwargs):
-        self.encoder_def=encoder
-        self.decoder_def=decoder
+    def init(self,kwargs):
+        super().init(kwargs)
+        self.encoder_def=kwargs.pop("encoder")
+        self.decoder_def=kwargs.pop("decoder")
         if type(self.encoder_def)==list:
             self.encoder_def=dict(type="Network",layers=self.encoder_def)
         if type(self.decoder_def)==list:
             self.decoder_def=dict(type="Network",layers=self.decoder_def)
-        self.mean_def=mean
-        self.log_std_def=log_std
+        self.mean_def=kwargs.pop("mean")
+        self.log_std_def=kwargs.pop("log_std",self.mean_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,type="Identity_Label")
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="encoder",**self.encoder_def)
         #self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="std",set_y=False,**self.std_def)
@@ -100,19 +95,19 @@ class VariationalAutoencoder(SimpleLayer):
                               mean=self.mean_def,log_std=self.log_std_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="decoder",**self.decoder_def)
         self.add_sublayer_def(sublayer_type=self.SUBLAYER_PROPER_MANAGED,attr="sigmoid",type="Sigmoid_Feature")
-        super().__init__(**kwargs)
-        self.in_shape=self._x.get_shape().as_list()
+    def call(self):
+        super().call()
+        self.in_shape=self.encoder.x.get_shape().as_list()
         self.in_shape[0]=None
         self.shape=self.z.get().get_shape().as_list()
         self.shape[0]=None
         #self.loss_reconstruction=tf.reduce_mean(tf.square(self.y-self._x))
-        self.loss_reconstruction=tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(self.decoder.get(),self._x))
+        self.loss_reconstruction=tf.reduce_sum(tf.nn.sigmoid_cross_entropy_with_logits(self.decoder.get(),self.x))
         self.loss_kl=0.5*tf.reduce_sum(tf.square(self.z.mean.get()) + tf.exp(self.z.log_std.get()) - self.z.log_std.get() - 1)
-        self.loss=(self.loss_reconstruction+self.loss_kl)/tf.cast(tf.reduce_prod(tf.shape(self._x)),tf.float32)
+        self.loss=(self.loss_reconstruction+self.loss_kl)/tf.cast(tf.reduce_prod(tf.shape(self.x)),tf.float32)
         #self.loss_reconstruction=tf.reduce_mean(tf.nn.sigmoid_cross_entropy_with_logits(self.decoder.get(),self._x))
         #self.loss_kl=0.5*tf.reduce_mean(tf.square(self.z.mean.get()) + tf.exp(self.z.log_std.get()) - self.z.log_std.get() - 1)
         #self.loss=self.loss_reconstruction
-        
     def make_encoder(self):
         if "z_encode" not in dir(self):
             self.encoder_input=Layer(type="Input",shape=self.in_shape)#Bad
@@ -159,12 +154,6 @@ class VariationalAutoencoder(SimpleLayer):
         assert(self.sess!=None)
         self.make_decoder_full()
         return self.sess.run(self.y_decoder_full,feed_dict={self.encoder_input.get():x})
-    def save(self,**kwargs):
-        kwargs["encoder"]=self.encoder_def
-        kwargs["decoder"]=self.decoder_def
-        kwargs["mean"]=self.mean_def
-        kwargs["log_std"]=self.log_std_def
-        return super().save(**kwargs)
 
 
 

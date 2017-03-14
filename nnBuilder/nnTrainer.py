@@ -168,7 +168,7 @@ class LabeledTrainer(Optimizer):
         if self.labels==None:
             self.labels=self.network.get_labels()
         if self.labels==None: 
-            raise Exception(self._noLabelsError)
+            raise Exception("Can't find labels")
         if isinstance(self.labels,SimpleLayer):
             self.labels=self.labels.get()
         if logits!=None:
