@@ -11,13 +11,11 @@ In this framework, all graph are made from basic building blocks, or "layers", w
 
 -Saving and loading variable definitions for a specific network
 
--Combining tensors into a larger ones
-
 -Setting up and running the graph trainer, and feeding the training parameters
 
--Managing the training data: loading , batch generation, labels, data augmentation (in progress)
+-Running the test phase
 
--Running the test phase (planned)
+-Managing the training data: loading , batch generation, labels, preprocessing, input pipeline (in progress)
 
 See the code and examples for more details.
 

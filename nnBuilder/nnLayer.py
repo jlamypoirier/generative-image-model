@@ -9,36 +9,6 @@ from nnHandler import *
 
 
 
-#####To do list:
-
-###Fixes
-#Update nnUtils
-#Rework _LayerVars
-#Rework combine ops
-#Update and add complex layers
-#Finish CIFAR-10 example
-#Ignore useless parameters on saving
-#More tests, debugging
-#Fix input pipeline
-
-###Improvements
-#Improve Testing Phase
-#Improve input and batching
-#Improve input pipeline
-
-###Features:
-#Network list builder
-#Implement "Soft Dropout"
-#Reimplement DeepDream (update nnDreamer)
-#Reimplement GAN (update nnGenerator)
-#More layers
-
-###Long term:
-#Load large datasets
-#ImageNet?
-#Multi-GPU?
-
-
 class LayerFactory:
     classes={}
     updated=False
