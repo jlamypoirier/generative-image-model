@@ -2,6 +2,7 @@ import numpy as np
 import tensorflow as tf
 import warnings
 from functools import partial
+from _nnUtils import *
 from nnHandler import *
 #import os
 #from dataProducer import *
@@ -53,7 +54,7 @@ class LayerFactory:
         else:
             t=cl.__name__
         if type(t)==str:
-        t=[t]
+            t=[t]
         for tp in t:
             if tp!="Abstract":
                 LayerFactory.classes[tp]=cl
@@ -80,20 +81,31 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
     type="Abstract"
     _uncaughtArgumentWarning="Unknown argument: %s"
     _finishedError="Trying to set the output of a finished layer"
-    def __init__(self,x=None,**kwargs):
+    def __init__(self,x=None,device=None,**kwargs):
         self.desc=itercopy(kwargs)
+        self.desc["type"]=self.get_type()
         self.input=x                         #The input for the layer (can be a Layer, a Tensor, a numpy array, or None)
         self.x=x                             #The input, converted to tensor-like (or None)
+        self.device=device                   #Allow manual device placement
         if isinstance(self.x,_LayerRaw):
             self.x=self.x.get()
-        self.init(kwargs)
+        if self.device!=None:
+            with tf.device(self.device):
+                self.init(kwargs)
+        else:
+            self.init(kwargs)
         for kw in kwargs:
             warnings.warn(self._uncaughtArgumentWarning%kw)
         self.y=self.x
         self.dropped=self.test and self.drop_on_test or (self.drop_on_test==None and "DROP_ON_TEST" in dir(self) and self.DROP_ON_TEST)
         if not self.dropped:
-            self.call(self.y)
-            self.finish()
+            if self.device!=None:
+                with tf.device(self.device):
+                    self.call(self.y)
+                    self.finish()
+            else:
+                self.call()
+                self.finish()
         self._y=self.y                       #The final output
         del self.y
         self.register()
@@ -104,6 +116,10 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         self.test=kwargs.pop("test",False)   #Indicates test phase (propagates to sublayers if set)
     def get(self):                           #Garanteed to be the final output
         return self._y
+    def get_type(self):
+        if type(self.type)==str:
+            return self.type
+        return self.type[0]
     def save(self):
         return itercopy(self.desc)
 
@@ -119,7 +135,7 @@ class _LayerInstance(_LayerRaw):#Session management (use as base class for saver
             warnings.warn("Layer is already running")
         self.sess=sess       #Should be a SessManager
         self._start()
-    def register(self)
+    def register(self):
         SessManager.register(self)
     def stop(self):
         self.sess=None
@@ -133,7 +149,7 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
     _copyManagerError="Copying variable requires a manager with an active session"
     _copySessionError="Copying variable requires both networks to have the same active session"
     _copyNetworkError="Copying variable requires identical networks"
-    def init(self,_cloned=None,kwargs):
+    def init(self,kwargs):
         super().init(kwargs)
         self.cloned=kwargs.pop("_cloned",None)     #The copied layer, for variable sharing 
         #if self.cloned!=None:
@@ -150,10 +166,9 @@ class _LayerCopy(_LayerInstance):#Copying and cloning
             ):                                #(ex. test=True)
         if x==None:
             x=self.x
-        cloned=share_vars and self or None
-        save=self.save()
+        save=share_vars and self.export() or self.save()
         save.update(kwargs)
-        layer=Layer(x=x,**save,_cloned=cloned)
+        layer=Layer(x=x,**save)
         if layer.sess==None and self.sess!=None:
             self.sess.add([layer])
         if copy_vars and not share_vars:
@@ -199,12 +214,15 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         self.make_sublayers(**self.SUBLAYER_PROPER)
         self.make_sublayers(**self.SUBLAYER_PROPER_MANAGED)
     def _export(self,sav):#Append _cloned variable to all sublayer definitions
-        for type in self.sublayer_types:
-            if type["kw"] in sav and sav[type["kw"]]!=None:
-                sublayers=getattr(self,type["attr"])
-                exp_sublayers=sav[type["kw"]]
+        sav["_cloned"]=self
+        for _type in self.sublayer_types:
+            if _type["kw"] in sav and sav[_type["kw"]]!=None:
+                sublayers=getattr(self,_type["attr"])
+                exp_sublayers=sav[_type["kw"]]
                 for i,sublayer in enumerate(sublayers):
-                    exp_sublayers[i]["_cloned"]=sublayer
+                    #exp_sublayers[i]["_cloned"]=sublayer
+                    if type(exp_sublayers[i])==str:
+                        exp_sublayers[i]=dict(type=exp_sublayers[i])
                     sublayer._export(exp_sublayers[i])
         return sav
     def export(self):
@@ -221,7 +239,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
                 _desc=_desc.copy()
                 if self.test!=None:
                     _desc["test"]=self.test
-                _cloned=_desc.pop("_cloned",cloned[i])
+                _cloned=_desc.pop("_cloned",cloned[i])#Redundant
                 x=_desc.pop("x",self.y)
                 if type(x)==str:
                     x=getattr(self,x)
@@ -243,16 +261,14 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
             getattr(self,sublayer_type["kw"]).insert(0,kwargs)
         else:
             getattr(self,sublayer_type["kw"]).append(kwargs)
-    def add_sublayer(self,layer,attr=None,set_y=False,finish=True,**kwargs):
+    def add_sublayer(self,layer,attr=None,set_y=False):
         self.sublayers.append(layer)
-        if finish or set_y:
-            layer.finish()
         if attr!=None:
             if attr not in dir(self):
                 setattr(self.attr,[])
             getattr(self,attr).append(layer)
         if set_y:
-            self.set(layer.get())
+            self.y=layer.get()
         return layer
     def _start(self):#Risky if the starting order matters?
         for sublayer in self.sublayers: sublayer.start(self.sess)
@@ -309,8 +325,6 @@ class _LayerVars(_LayerTree):#Gathering functions for variables, labels and some
 ###Basic layer (Rename?)
 class SimpleLayer(_LayerVars):
     type=["Network","Identity"]
-    def __init__(self,**kwargs):
-        super().__init__(**kwargs)
         
 #Template for simple layer classes. Possible uses:
 #Start from any existing layer type
@@ -326,11 +340,6 @@ def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,ou
             DROP_ON_TEST=drop_on_test
         if args!=None:
             assert(fun!=None),"Argument list given but no function"
-        def __init__(self,x=None,**kwargs1):
-            for key in kwargs:
-                if key not in kwargs1:
-                    kwargs1[key]=kwargs[key]
-            super().init(kwargs1)
         def init(self,kwargs1):
             if in_features!=None:
                 for feature in in_features:
@@ -348,13 +357,15 @@ def make_layer(name,fun=None,args=None,BaseClass=SimpleLayer,in_features=None,ou
                 if key not in kwargs1:
                     kwargs1[key]=kwargs[key]
             super().init(kwargs1)
-            arg_dic={}
+            self.arg_dic={}
             if args!=None:
                 for arg in args:
                     setattr(self,arg,kwargs1.pop(arg,None))
-                    arg_dic[arg]=getattr(self,arg)
-            if fun!=None:
-                self.y=fun(self.y,**arg_dic)
+                    self.arg_dic[arg]=getattr(self,arg)
+        if fun!=None:
+            def call(self):
+                super().call()
+                self.y=fun(self.y,**self.arg_dic)
     LayerClass.__name__=type(name)==list and name[0] or name
     LayerFactory._add_class(LayerClass)
     return LayerClass
@@ -443,7 +454,7 @@ class DropoutLayer(SimpleLayer):
     DROP_ON_TEST=True
     def init(self,kwargs):
         super().init(kwargs)
-        self.default_rate=kwargs.pop(default_rate,1.0)
+        self.default_rate=kwargs.pop("default_rate",1.0)
     def call(self):
         super().call()
         self.tf_keep_rate=tf.placeholder_with_default(np.float32(self.default_rate),[])
@@ -476,19 +487,19 @@ class LinearLayer(SimpleLayer):
         super().init(kwargs)
         self.size=kwargs.pop("size",1)              #Number of output channels
         self.rand_scale=kwargs.pop("rand_scale",0.1)#Scale for random initialization of weights and biases
+    def call(self):
+        super().call()
         shape=self.y.get_shape()[1:]
         if len(shape)>1:
             self.y=tf.reshape(self.y,[-1,shape.num_elements()])
-        self.shape=[shape.num_elements(),size]
+        self.shape=[shape.num_elements(),self.size]
         if self.cloned!=None:
             assert(self.shape==self.cloned.shape)
             self.w=self.cloned.w
             self.b=self.cloned.b
         else:
             self.w=tf.Variable(tf.random_normal(self.shape, 0, self.rand_scale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([size], self.rand_scale, self.rand_scale),name='Biases')
-    def call(self):
-        super().call()
+            self.b=tf.Variable(tf.random_normal([self.size], self.rand_scale, self.rand_scale),name='Biases')
         self.y=tf.matmul(self.y,self.w)+self.b
     def get_weights(self):
         return super().get_weights()+[self.w]
@@ -527,20 +538,20 @@ class ConvLayer(WindowLayer):
         self.size=kwargs.pop("size",1)       #Number of output channels
         self.rand_scale=kwargs.pop("rand_scale",0.1)#Scale for random initialization of weights and biases
         self.relu=kwargs.pop("relu",True)    #Optional relu on the output
-        self._input_channels=kwargs.pop("input_channels",None) #(Optional) overrides the number of input channels, 
+        self.input_channels=kwargs.pop("input_channels",None) #(Optional) overrides the number of input channels, 
                                                                #needed for variable size input
-        self.input_channels=self._input_channels or self.y.get_shape()[3].value
-        if relu:
+        if self.relu:
             self.add_sublayer_def(sublayer_type=self.SUBLAYER_OUTPUT_MANAGED,type="Relu_Feature")
+    def call(self):
+        super().call()
+        self.input_channels=self.input_channels or self.y.get_shape()[3].value
         self.filter_shape=[self.window,self.window,self.input_channels,self.size]
         if self.cloned!=None:
             self.w=self.cloned.w
             self.b=self.cloned.b
         else:
             self.w=tf.Variable(tf.random_normal(self.filter_shape, 0, self.rand_scale),name='Weights')
-            self.b=tf.Variable(tf.random_normal([self.size], rand_scale, self.rand_scale),name='Biases')
-    def call(self):
-        super().call()
+            self.b=tf.Variable(tf.random_normal([self.size], self.rand_scale, self.rand_scale),name='Biases')
         if self.input_stride!=1:
             self.y=tf.nn.bias_add(tf.nn.atrous_conv2d(self.y,filters=self.w,rate=self.input_stride,padding=self.pad),self.b)
         else:
@@ -592,11 +603,15 @@ class ConvTransposeLayer(WindowLayer):
 class PoolLayer(WindowLayer):
     type="Pool"#["Pool","MaxPooling2D","AveragePooling2D"]
     _poolTypeError="Invlid pooling type: %s"
-    def __init__(self,pool_type="MAX",stride=2,**kwargs):
-        super().__init__(stride=stride,**kwargs)
-        self.pool_type=pool_type             #avg or max pooling 
+    def init(self,kwargs):
+        if "stride" not in kwargs:
+            kwargs["stride"]=2
+        super().init(kwargs)
+        self.pool_type=kwargs.pop("pool_type","max")  #avg or max pooling 
         self.ksize=[1, self.window, self.window, 1]
         self.strides=[1, self.stride, self.stride, 1]
+    def call(self):
+        super().call()
         if self.pool_type=="max":
             self.y=tf.nn.max_pool(self.y, ksize=self.ksize, 
                       strides=self.strides,padding=self.pad)
