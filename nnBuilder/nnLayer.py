@@ -38,7 +38,17 @@ class LayerFactory:
         LayerFactory._update_classes(SimpleLayer)
         LayerFactory.updated=True
     @staticmethod
-    def build(type,*args,**kwargs):
+    def build(*args,**kwargs):
+        if "type" in kwargs:#Standard case
+            _type=kwargs.pop("type")
+            return LayerFactory._build(_type,*args,**kwargs)
+        elif type(args[0])==str:#Build from string
+            return LayerFactory._build(*args,**kwargs)
+        elif type(args[0])==lis:#Build network from list of layers
+            assert(len(args)==1 and kwargs=={}),"Too many arguments"
+            return LayerFactory._build(type="Network",layers=args[0])
+    @staticmethod
+    def _build(type,*args,**kwargs):
         if not LayerFactory.updated:
             LayerFactory.update_classes()
         assert(type in LayerFactory.classes), LayerFactory._layerTypeError%type

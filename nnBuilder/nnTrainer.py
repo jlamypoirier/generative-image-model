@@ -191,7 +191,7 @@ class LabeledTrainer(Optimizer):
             loss=tf.reduce_mean(tf.square(self.logits-self.labels))
         elif self.loss_type=="network":
             assert("loss" in dir(self.network))
-            loss=self.network.loss
+            loss=self.network.loss()
         else:
             raise Exception("Unknown loss type: %s"%self.loss_type)
         super()._finish(loss=loss)
