@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import warnings
 from functools import partial
-from _nnUtils import *
+from nnUtils import *
 from nnHandler import *
 #import os
 #from dataProducer import *
@@ -83,7 +83,7 @@ class _LayerRaw:#Most basic layer, has a type, an input and an output
         if not self.dropped:
             if self.device!=None:
                 with tf.device(self.device):
-                    self.call(self.y)
+                    self.call()
                     self.finish()
             else:
                 self.call()
@@ -247,7 +247,7 @@ class _LayerTree(_LayerCopy):#Feature layers and sublayers, allows new sublayer 
         self.sublayers.append(layer)
         if attr!=None:
             if attr not in dir(self):
-                setattr(self.attr,[])
+                setattr(self,attr,[])
             getattr(self,attr).append(layer)
         if set_y:
             self.y=layer.get()
@@ -358,7 +358,7 @@ def batch_fun(fun,parallel_iterations=1024):
     return f
 def make_batch_layer(name,fun,*args,make_both=True, parallel_iterations=1024,**kwargs):
     if make_both:
-        return (make_layer(name=name,fun=fun,*args,make_both=False,**kwargs),
+        return (make_layer(name=name,fun=fun,*args,**kwargs),
                 make_batch_layer(name="Batch_"+name,fun=fun,*args,make_both=False,**kwargs))
     return make_layer(name=name,fun=batch_fun(fun,parallel_iterations),*args,**kwargs)
 

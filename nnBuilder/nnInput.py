@@ -2,7 +2,7 @@ import numpy as np
 import tensorflow as tf
 import warnings
 from nnLayer import *
-from _nnUtils import *
+from nnUtils import *
 import os
 import sys
 import tarfile
@@ -121,12 +121,19 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.saver=tf.train.Saver({"data":self.tf_var},max_to_keep=10000)'''
             self.tf_file_path=self.file_path+".tf"
             self.shape_file_path=self.file_path+".shape.npy"
+            self.scale_file_path=self.file_path+".scale.npy"
             if os.path.isfile(self.tf_file_path) and os.path.isfile(self.shape_file_path):
                 self.shape=np.load(self.shape_file_path)
+                if self.normalize and os.path.isfile(self.scale_file_path):
+                    t=np.load(self.scale_file_path)
+                    self.mean=t[0]
+                    self.std=t[1]
             else:
                 self.load_file()
                 writeTf(self.tf_file_path,self.file_data)
                 np.save(self.shape_file_path,self.shape)
+                if self.normalize:
+                    np.save(self.scale_file_path,[self.mean,self.std])
             reader=tf.read_file(self.tf_file_path)
             decode=tf.decode_raw(reader, tf.float32)[3:-1]#Better way?
             self.y=tf.Variable(tf.reshape(decode,self.shape))
@@ -139,13 +146,15 @@ class ConstantLayer(SimpleLayer):     #A constant, loaded at startup from either
             self.labels=self.add_sublayer(ConstantLayer(x=None,folder=self.folder,file=self.label_file,convert_file=self.convert_file))
     def load_file(self):
         if self.file_data==None:
-            assert(os.path.isfile(self.file)), 'Cannot find file "%s"'%self.file
+            assert(os.path.isfile(self.file_path)), 'Cannot find file "%s"'%self.file
             self.file_data=load_data(self.file_path)
             self.shape=self.file_data.shape
             if self.normalize:
                 self.mean=self.file_data.mean()
                 self.std=self.file_data.std()
                 self.file_data=(self.file_data-self.mean)/self.std
+    def unnorm(self,x):
+        return x*self.std+self.mean
 
 #Random layers
 class RandomLayer(BasicInputLayer):
@@ -343,6 +352,43 @@ RandomBrightness,BatchRandomBrightness=make_batch_layer(name="Random_Brightness"
 RandomContrast,BatchRandomContrast=make_batch_layer(name="Random_Contrast",
     fun=lambda x,lower,upper:tf.image.random_contrast(x,lower=lower,upper=upper),
     args=["lower","upper"],lower=0.2, upper=1.8,drop_on_test=True)
+
+
+class MultiCrop(SimpleLayer): #Same as RandomCrop, but copies will use the same cropping
+    type="Multi_Crop"
+    def init(self,kwargs):
+        super().init(kwargs)
+        self.shape=kwargs.pop("shape")
+    def call(self):
+        super().call()
+        self.x_shape=self.y.get_shape().as_list()
+        if self.cloned==None:
+            self.s1=tf.random_uniform([], minval=0, maxval=self.x_shape[0]-self.shape[0], dtype=tf.int32)
+            self.s2=tf.random_uniform([], minval=0, maxval=self.x_shape[1]-self.shape[1], dtype=tf.int32)
+        else:
+            self.s1=self.cloned.s1
+            self.s2=self.cloned.s2
+        self.y=tf.slice(self.y,[self.s1,self.s2,0],self.shape)
+
+class BatchMultiCrop(SimpleLayer):
+    type="Batch_Multi_Crop"
+    def init(self,kwargs):
+        super().init(kwargs)
+        self.shape=kwargs.pop("shape")
+        self.batch=kwargs.pop("batch")
+    def call(self):
+        super().call()
+        self.x_shape=self.y.get_shape().as_list()
+        if self.cloned==None:
+            self.s1=tf.random_uniform([self.batch], minval=0, maxval=self.x_shape[0]-self.shape[0], dtype=tf.int32)
+            self.s2=tf.random_uniform([self.batch], minval=0, maxval=self.x_shape[1]-self.shape[1], dtype=tf.int32)
+        else:
+            self.s1=self.cloned.s1
+            self.s2=self.cloned.s2
+        def fn(s):
+            return tf.slice(self.y,[s[0],s[1],0],self.shape)
+        self.y=tf.map_fn(fn,[self.s1,self.s2], parallel_iterations=1024,dtype=tf.float32)
+
 
 class CentralCrop(SimpleLayer): #Broadcasts a tensor into a batch of identical tensors
     type="Central_Crop"

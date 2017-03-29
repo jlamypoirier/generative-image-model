@@ -39,7 +39,9 @@ def show(a, fmt='jpeg'):
     PIL.Image.fromarray(a).save(f, fmt)
     display(Image(data=f.getvalue()))
 def plot(img,cmap=plt.cm.Greys):
-    return plt.imshow(img,cmap=cmap, interpolation='nearest')
+    y=plt.imshow(img,cmap=cmap, interpolation='nearest')
+    plt.grid(None)
+    return y
 def plot3d(img=None,cmap='terrain',reg=10):
     hf = plt.figure()
     ha = hf.add_subplot(111, projection='3d')
@@ -71,3 +73,13 @@ def convertData(File):
         #tf.initialize_all_variables().run()
         #c.restore(sess,File)
         #d=sess.run(b)
+
+
+
+
+
+
+
+
+
+
